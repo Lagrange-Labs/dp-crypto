@@ -4,3 +4,26 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ark-bn254 = { version = "0.5.0", features = ["std"]}
+ark-std = { version = "0.5.0", features = ["std","getrandom"]}
+ark-ec = { version = "0.5.0", features = ["std"]}
+ark-ff = { version = "0.5.0", features = ["std"] }
+ark-poly = { version = "0.5.0", features = ["std"]}
+anyhow = "1.0.100"
+blake3 = "1.8.2"
+
+[features]
+default = ["mono"]
+parallel = [
+    "ark-ec/parallel",
+    "ark-ff/parallel",
+    "ark-poly/parallel",
+    "ark-std/parallel",
+]
+mono = []
+
+[patch.crates-io]
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-poly = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
