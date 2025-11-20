@@ -1,18 +1,17 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::uninlined_format_args)]
-use rayon::iter::IndexedParallelIterator;
-use ark_ff::{Field, PrimeField, Zero};
-use ark_poly::MultilinearExtension;
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::{cfg_iter, cfg_iter_mut};
-use rand::Rng;
-use core::ops::Index;
-use rayon::prelude::*;
 use anyhow::ensure;
+use ark_ff::Field;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_std::rand::{Rng, RngCore};
+use core::ops::Index;
+use rayon::iter::IndexedParallelIterator;
+use rayon::prelude::*;
 
 use crate::poly::{eq, field::mul_01_optimized, unsafe_allocate_zero_vec};
 
-enum FixOrder {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixOrder {
     LowToHigh,
     HighToLow,
 }
@@ -148,11 +147,9 @@ impl<F: Field> DensePolynomial<F> {
         #[cfg(feature = "parallel")]
         let it = left.par_iter_mut().zip(right.par_iter()).with_min_len(4096);
 
-
-        it.filter(|&(&mut a, &b)| a != b)
-            .for_each(|(a, b)| {
-                *a += *r * (*b - *a);
-            });
+        it.filter(|&(&mut a, &b)| a != b).for_each(|(a, b)| {
+            *a += *r * (*b - *a);
+        });
 
         self.num_vars -= 1;
         self.len = n;
@@ -209,8 +206,8 @@ impl<F: Field> DensePolynomial<F> {
 
     pub fn bound_poly_var_bot_01_optimized(&mut self, r: &F) {
         let n = self.len() / 2;
-        let mut bound_Z = Vec::with_capacity(n);
-        (bound_Z.spare_capacity_mut(), self.z.par_chunks_exact(2))
+        let mut bound_z = Vec::with_capacity(n);
+        (bound_z.spare_capacity_mut(), self.z.par_chunks_exact(2))
             .into_par_iter()
             .with_min_len(512)
             .for_each(|(bound_coeff, coeffs)| {
@@ -223,14 +220,13 @@ impl<F: Field> DensePolynomial<F> {
                     coeffs[0] + *r * m
                 });
             });
-        unsafe { bound_Z.set_len(n) };
-        self.z = bound_Z;
+        unsafe { bound_z.set_len(n) };
+        self.z = bound_z;
         self.num_vars -= 1;
         self.len = n;
     }
 
-    pub fn evaluate_dot_product(&self, r: &[F]) -> F
-    {
+    pub fn evaluate_dot_product(&self, r: &[F]) -> F {
         // r must have a value for each variable
         assert_eq!(r.len(), self.num_vars);
         let chis = eq::evals(r);
@@ -239,20 +235,23 @@ impl<F: Field> DensePolynomial<F> {
     }
 
     // returns Z(r) in O(n) time
-    pub fn evaluate(&self, r: &[F]) -> anyhow::Result<F>
-    {
-        ensure!(r.len() == self.num_vars, "r len() = {} vs num_vars = {}", r.len(), self.num_vars);
+    pub fn evaluate(&self, r: &[F]) -> anyhow::Result<F> {
+        ensure!(
+            r.len() == self.num_vars,
+            "r len() = {} vs num_vars = {}",
+            r.len(),
+            self.num_vars
+        );
         let m = r.len() / 2;
         let (r2, r1) = r.split_at(m);
         let (eq_one, eq_two) = rayon::join(|| eq::evals(r2), || eq::evals(r1));
-        Ok(self.split_eq_evaluate(r.len(), &eq_one, &eq_two))
+        Ok(self.split_eq_evaluate(&eq_one, &eq_two))
     }
 
-    pub fn split_eq_evaluate(&self, r_len: usize, eq_one: &[F], eq_two: &[F]) -> F {
-        const PARALLEL_THRESHOLD: usize = 16;
+    pub fn split_eq_evaluate(&self, eq_one: &[F], eq_two: &[F]) -> F {
         #[cfg(feature = "parallel")]
         {
-            if r_len < PARALLEL_THRESHOLD {
+            if r_len < EQ_PARALLEL_THRESHOLD {
                 self.evaluate_split_eq_serial(eq_one, eq_two)
             } else {
                 self.evaluate_split_eq_parallel(eq_one, eq_two)
@@ -298,8 +297,7 @@ impl<F: Field> DensePolynomial<F> {
     // Faster evaluation based on
     // https://randomwalks.xyz/publish/fast_polynomial_evaluation.html
     // Shaves a factor of 2 from run time.
-    pub fn inside_out_evaluate(&self, r: &[F]) -> F
-    {
+    pub fn inside_out_evaluate(&self, r: &[F]) -> F {
         // Copied over from eq_poly
         // If the number of variables are greater
         // than 2^16 -- use parallel evaluate
@@ -316,8 +314,7 @@ impl<F: Field> DensePolynomial<F> {
         }
     }
 
-    fn inside_out_serial(&self, r: &[F]) -> F
-    {
+    fn inside_out_serial(&self, r: &[F]) -> F {
         // r is expected to be big endinan
         // r[0] is the most significant digit
         let mut current = self.z.clone();
@@ -347,8 +344,7 @@ impl<F: Field> DensePolynomial<F> {
         current[0]
     }
 
-    fn inside_out_parallel(&self, r: &[F]) -> F
-    {
+    fn inside_out_parallel(&self, r: &[F]) -> F {
         let mut current: Vec<_> = self.z.par_iter().cloned().collect();
         let m = r.len();
         // Invoking the same parallelisation structure
@@ -404,7 +400,7 @@ impl<F: Field> DensePolynomial<F> {
         output
     }
 
-    pub fn random<R: Rng>(num_vars: usize, mut rng: &mut R) -> Self {
+    pub fn random<R: Rng + RngCore>(num_vars: usize, mut rng: &mut R) -> Self {
         Self::new(
             std::iter::from_fn(|| Some(F::rand(&mut rng)))
                 .take(1 << num_vars)
@@ -413,17 +409,10 @@ impl<F: Field> DensePolynomial<F> {
     }
 
     #[tracing::instrument(skip_all)]
-    pub fn linear_combination(
-        polynomials: &[&Self],
-        coefficients: &[F],
-    ) -> Self {
+    pub fn linear_combination(polynomials: &[&Self], coefficients: &[F]) -> Self {
         debug_assert_eq!(polynomials.len(), coefficients.len());
 
-        let max_length = polynomials
-            .iter()
-            .map(|poly| poly.len())
-            .max()
-            .unwrap();
+        let max_length = polynomials.iter().map(|poly| poly.len()).max().unwrap();
 
         let result: Vec<F> = (0..max_length)
             .into_par_iter()
@@ -450,13 +439,20 @@ impl<F: Field> Index<usize> for DensePolynomial<F> {
     }
 }
 
-impl<F: Field, N> From<&[N]> for DensePolynomial<F> where F: From<N>, N: Copy {
+impl<F: Field, N> From<&[N]> for DensePolynomial<F>
+where
+    F: From<N>,
+    N: Copy,
+{
     fn from(values: &[N]) -> Self {
         DensePolynomial::new(values.iter().map(|v| F::from(*v)).collect())
     }
 }
 
-impl<F: Field, N> From<Vec<N>> for DensePolynomial<F> where F: From<N> {
+impl<F: Field, N> From<Vec<N>> for DensePolynomial<F>
+where
+    F: From<N>,
+{
     fn from(values: Vec<N>) -> Self {
         DensePolynomial::new(values.into_iter().map(|v| F::from(v)).collect())
     }
@@ -506,17 +502,17 @@ pub(crate) const fn swap_bits(x: usize, a: usize, b: usize, n: usize) -> usize {
     x ^ global_xor_mask
 }
 
-
 #[cfg(test)]
 mod tests {
-
     use crate::poly::{Math, challenge};
+    use ark_ff::PrimeField;
+    use ark_std::rand::Rng;
+    use rand_chacha::rand_core::SeedableRng;
 
     use super::*;
     use ark_bn254::Fr;
     use ark_ff::UniformRand;
     use ark_std::test_rng;
-    use rand::Rng;
 
     pub fn compute_chis_at_r<F: Field>(r: &[F]) -> Vec<F> {
         let ell = r.len();
@@ -573,7 +569,9 @@ mod tests {
         // g(3, 4) = 8*(1 - 3)(1 - 4) + 8*(1-3)(4) + 8*(3)(1-4) + 8*(3)(4) = 48 + -64 + -72 + 96  = 8
         // g(5, 10) = 8*(1 - 5)(1 - 10) + 8*(1 - 5)(10) + 8*(5)(1-10) + 8*(5)(10) = 96 + -16 + -72 + 96  = 8
         assert_eq!(
-            dense_poly.evaluate(vec![Fr::from(3), Fr::from(4)].as_slice()).unwrap(),
+            dense_poly
+                .evaluate(vec![Fr::from(3), Fr::from(4)].as_slice())
+                .unwrap(),
             Fr::from(8)
         );
     }
@@ -581,8 +579,8 @@ mod tests {
     fn compare_random_evaluations() {
         // Compares optimised polynomial evaluation
         // with the old polynomial evaluation
+        use ark_std::rand::SeedableRng;
         use rand_chacha::ChaCha20Rng;
-        use rand_core::SeedableRng;
 
         let mut rng = ChaCha20Rng::seed_from_u64(42);
 

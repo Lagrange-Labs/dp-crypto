@@ -1,10 +1,8 @@
 use ark_ff::Zero;
-use ark_ff::Field;
-
+pub mod challenge;
 pub mod dense;
 pub mod eq;
 pub mod field;
-pub mod challenge;
 
 trait Math {
     /// Returns 2^self

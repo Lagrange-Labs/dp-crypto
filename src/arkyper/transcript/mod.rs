@@ -1,11 +1,12 @@
 use std::borrow::Borrow;
 
-use ark_ec::{AffineRepr, CurveGroup};
+use ark_ec::{AffineRepr};
 use ark_ff::{Field, PrimeField};
 use ark_serialize::CanonicalSerialize;
 pub mod blake3;
 
-const ZERO_POINT_SERIALIZED : [u8;4] = [0u8;4];
+/// Constant serialization of an infinity point. 
+const ZERO_POINT_SERIALIZED: [u8; 16] = [0u8; 16];
 
 // TODO: add the string DST on each append()
 pub trait Transcript {
@@ -13,9 +14,12 @@ pub trait Transcript {
     fn challenge_bytes(&mut self, out: &mut [u8]);
 
     fn append_scalars<F: PrimeField>(&mut self, scalars: &[impl Borrow<F>]) {
-        let mut buff = vec![0u8;F::MODULUS_BIT_SIZE as usize/8];
+        let mut buff = vec![0u8; F::MODULUS_BIT_SIZE as usize / 8];
         for scalar in scalars {
-            scalar.borrow().serialize_compressed(&mut buff).expect("should never fail");
+            scalar
+                .borrow()
+                .serialize_compressed(&mut buff)
+                .expect("should never fail");
             self.append_bytes(&buff);
         }
     }
@@ -38,7 +42,8 @@ pub trait Transcript {
     }
 
     fn append_points<A: AffineRepr>(&mut self, points: &[impl Borrow<A>]) {
-        let mut buff = vec![0u8;<A::BaseField as Field>::BasePrimeField::MODULUS_BIT_SIZE as usize/8];
+        let mut buff =
+            vec![0u8; <A::BaseField as Field>::BasePrimeField::MODULUS_BIT_SIZE as usize / 8];
         for point in points {
             let aff = point.borrow();
             if aff.is_zero() {
@@ -47,9 +52,11 @@ pub trait Transcript {
                 continue;
             }
             let (x, y) = aff.xy().expect("point should be on curve");
-            x.serialize_compressed(&mut buff).expect("should never fail");
+            x.serialize_compressed(&mut buff)
+                .expect("should never fail");
             self.append_bytes(&buff);
-            y.serialize_compressed(&mut buff).expect("should never fail");
+            y.serialize_compressed(&mut buff)
+                .expect("should never fail");
             self.append_bytes(&buff);
         }
     }

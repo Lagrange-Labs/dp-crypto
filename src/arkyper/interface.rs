@@ -1,5 +1,5 @@
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use rand::RngCore;
+use ark_std::rand::{Rng, RngCore};
 use std::{borrow::Borrow, fmt::Debug};
 
 use crate::{arkyper::Transcript, poly::dense::DensePolynomial};
@@ -25,7 +25,10 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
 
     /// Generates the prover setup for this PCS. `max_num_vars` is the maximum number of
     /// variables of any polynomial that will be committed using this setup.
-    fn test_setup<R: RngCore>(rng: &mut R, max_num_vars: usize) -> (Self::ProverSetup, Self::VerifierSetup);
+    fn test_setup<R: Rng + RngCore>(
+        rng: &mut R,
+        max_num_vars: usize,
+    ) -> (Self::ProverSetup, Self::VerifierSetup);
 
     /// Commits to a multilinear polynomial using the provided setup.
     ///
@@ -70,7 +73,7 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         _coeffs: &[Self::Field],
     ) -> Self::OpeningProofHint {
         unimplemented!()
-    } 
+    }
 
     /// Generates a proof of evaluation for a polynomial at a specific point.
     ///
