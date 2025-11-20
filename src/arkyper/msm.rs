@@ -7,17 +7,17 @@ use ark_std::cfg_iter;
 use rayon::prelude::*;
 
 use crate::poly::dense::DensePolynomial;
-pub fn poly_msm<A: AffineRepr>(
+pub fn poly_msm<'a, A: AffineRepr>(
     g1_powers: &[A],
-    poly: &impl Borrow<DensePolynomial<A::ScalarField>>,
+    poly: &impl Borrow<DensePolynomial<'a, A::ScalarField>>,
 ) -> anyhow::Result<A::Group> {
     let mut r = batch_poly_msm(g1_powers, &[poly.borrow()])?;
     Ok(r.remove(0))
 }
 
-pub fn batch_poly_msm<A: AffineRepr>(
+pub fn batch_poly_msm<'a,A: AffineRepr>(
     g1_powers: &[A],
-    polys: &[impl Borrow<DensePolynomial<A::ScalarField>>],
+    polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
 ) -> anyhow::Result<Vec<A::Group>> {
     let coeffs = polys
         .iter()

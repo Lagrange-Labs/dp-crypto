@@ -1,6 +1,7 @@
 use ark_ff::Zero;
 pub mod challenge;
 pub mod dense;
+pub mod slice;
 pub mod eq;
 pub mod field;
 

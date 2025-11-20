@@ -16,7 +16,6 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::Rng;
 use ark_std::rand::RngCore;
 use ark_std::{One, Zero, cfg_iter, cfg_iter_mut};
-use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
@@ -28,6 +27,8 @@ pub mod msm;
 pub mod transcript;
 pub use interface::*;
 use transcript::Transcript;
+#[cfg(feature = "parallel")]
+use rayon::iter::IntoParallelRefMutIterator;
 
 // just a type needed to create the SRS
 #[allow(dead_code)]
@@ -460,12 +461,12 @@ impl<P: Pairing> CommitmentScheme for HyperKZG<P> {
     }
 
     #[tracing::instrument(skip_all, name = "HyperKZG::batch_commit")]
-    fn batch_commit<U>(
+    fn batch_commit<'a, U>(
         gens: &Self::ProverSetup,
         polys: &[U],
     ) -> anyhow::Result<Vec<(Self::Commitment, Self::OpeningProofHint)>>
     where
-        U: Borrow<DensePolynomial<Self::Field>> + Sync,
+        U: Borrow<DensePolynomial<'a, Self::Field>> + Sync,
     {
         Ok(msm::batch_poly_msm(gens.g1_powers(), polys)?
             .into_iter()

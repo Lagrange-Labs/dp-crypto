@@ -2,14 +2,14 @@
 #![allow(clippy::uninlined_format_args)]
 use anyhow::ensure;
 use ark_ff::Field;
+#[cfg(feature = "parallel")]
 use crate::poly::eq::EQ_PARALLEL_THRESHOLD;
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, RngCore};
 use core::ops::Index;
 use rayon::iter::IndexedParallelIterator;
 use rayon::prelude::*;
 
-use crate::poly::{eq, field::mul_01_optimized, unsafe_allocate_zero_vec};
+use crate::poly::{eq, field::mul_01_optimized, slice::SmartSlice, unsafe_allocate_zero_vec};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FixOrder {
@@ -18,21 +18,23 @@ pub enum FixOrder {
 }
 
 // Field trait bound required for CanonicalSerialize and CanonicalDeserialize
-#[derive(Clone, Default, Debug, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct DensePolynomial<F: Field> {
+#[derive(Clone, Default, Debug, PartialEq)]
+pub struct DensePolynomial<'a, F: Field> {
     pub num_vars: usize, // the number of variables in the multilinear polynomial
     pub len: usize,
-    pub z: Vec<F>, // evaluations of the polynomial in all the 2^num_vars Boolean inputs
+    pub z: SmartSlice<'a, F>,
 }
 
-impl<F: Field> DensePolynomial<F> {
+impl<'a, F: Field> DensePolynomial<'a, F> {
     pub fn new(z: Vec<F>) -> Self {
+        Self::new_from_smart_slice(SmartSlice::Owned(z))
+    }
+    pub fn new_from_smart_slice(z: SmartSlice<'a, F>) -> Self {
         assert!(
             z.len().is_power_of_two(),
             "Dense multi-linear polynomials must be made from a power of 2 (not {})",
             z.len()
         );
-
         DensePolynomial {
             num_vars: z.len().ilog2() as usize,
             len: z.len(),
@@ -47,11 +49,7 @@ impl<F: Field> DensePolynomial<F> {
             poly_evals.push(F::zero());
         }
 
-        DensePolynomial {
-            num_vars: poly_evals.len().ilog2() as usize,
-            len: poly_evals.len(),
-            z: poly_evals,
-        }
+        Self::new_from_smart_slice(SmartSlice::Owned(poly_evals))
     }
 
     pub fn len(&self) -> usize {
@@ -84,7 +82,7 @@ impl<F: Field> DensePolynomial<F> {
         for i in 0..self.z.len() {
             let j = swap_bits(i, a, b, k);
             if i < j {
-                self.z.swap(i, j);
+                self.z.to_mut().swap(i, j);
             }
         }
     }
@@ -105,9 +103,13 @@ impl<F: Field> DensePolynomial<F> {
 
     pub fn fix_high_mut(&mut self, r: &F) {
         let n = self.len() / 2;
-        let (left, right) = self.z.split_at_mut(n);
+        let (left, right) = self.z.to_mut().split_at_mut(n);
 
-        left.iter_mut().zip(right.iter()).for_each(|(a, b)| {
+        #[cfg(not(feature = "parallel"))]
+        let it = left.iter_mut().zip(right.iter());
+        #[cfg(feature = "parallel")]
+        let it = left.par_iter_mut().zip(right.par_iter()).with_min_len(4096);
+        it.for_each(|(a, b)| {
             *a += *r * (*b - *a);
         });
 
@@ -117,11 +119,14 @@ impl<F: Field> DensePolynomial<F> {
 
     pub fn fix_high_many_ones_top(&mut self, r: &F) {
         let n = self.len() / 2;
-        let (left, right) = self.z.split_at_mut(n);
+        let (left, right) = self.z.to_mut().split_at_mut(n);
 
-        left.iter_mut()
-            .zip(right.iter())
-            .filter(|&(&mut a, &b)| a != b)
+        #[cfg(not(feature = "parallel"))]
+        let it = left.iter_mut().zip(right.iter());
+        #[cfg(feature = "parallel")]
+        let it = left.par_iter_mut().zip(right.par_iter()).with_min_len(4096);
+
+        it.filter(|&(&mut a, &b)| a != b)
             .for_each(|(a, b)| {
                 let m = *b - *a;
                 if m.is_one() {
@@ -141,7 +146,7 @@ impl<F: Field> DensePolynomial<F> {
     pub fn par_fix_mut_top(&mut self, r: &F) {
         let n = self.len() / 2;
 
-        let (left, right) = self.z.split_at_mut(n);
+        let (left, right) = self.z.to_mut().split_at_mut(n);
 
         #[cfg(not(feature = "parallel"))]
         let it = left.iter_mut().zip(right.iter());
@@ -175,7 +180,7 @@ impl<F: Field> DensePolynomial<F> {
         Self {
             num_vars,
             len,
-            z: new_evals,
+            z: SmartSlice::Owned(new_evals),
         }
     }
 
@@ -203,7 +208,7 @@ impl<F: Field> DensePolynomial<F> {
         Self {
             num_vars: self.num_vars - 1,
             len: n,
-            z: new_evals,
+            z: SmartSlice::Owned(new_evals),
         }
     }
 
@@ -224,7 +229,7 @@ impl<F: Field> DensePolynomial<F> {
                 });
             });
         unsafe { bound_z.set_len(n) };
-        self.z = bound_z;
+        self.z = SmartSlice::Owned(bound_z);
         self.num_vars -= 1;
         self.len = n;
     }
@@ -387,11 +392,11 @@ impl<F: Field> DensePolynomial<F> {
     }
 
     pub fn evals(&self) -> Vec<F> {
-        self.z.clone()
+        self.z.to_vec()
     }
 
     pub fn evals_ref(&self) -> &[F] {
-        self.z.as_ref()
+        self.z.as_slice()
     }
 
     pub fn eval_as_univariate(&self, r: &F) -> F {
@@ -434,7 +439,7 @@ impl<F: Field> DensePolynomial<F> {
     }
 }
 
-impl<F: Field> Index<usize> for DensePolynomial<F> {
+impl<'a, F: Field> Index<usize> for DensePolynomial<'a, F> {
     type Output = F;
 
     #[inline(always)]
@@ -443,7 +448,7 @@ impl<F: Field> Index<usize> for DensePolynomial<F> {
     }
 }
 
-impl<F: Field, N> From<&[N]> for DensePolynomial<F>
+impl<'a, F: Field, N> From<&[N]> for DensePolynomial<'a, F>
 where
     F: From<N>,
     N: Copy,
@@ -453,7 +458,7 @@ where
     }
 }
 
-impl<F: Field, N> From<Vec<N>> for DensePolynomial<F>
+impl<'a, F: Field, N> From<Vec<N>> for DensePolynomial<'a, F>
 where
     F: From<N>,
 {

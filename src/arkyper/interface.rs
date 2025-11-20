@@ -52,12 +52,12 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
     ///
     /// # Returns
     /// A vector of commitments, one for each input polynomial
-    fn batch_commit<U>(
+    fn batch_commit<'a, U>(
         gens: &Self::ProverSetup,
         polys: &[U],
     ) -> anyhow::Result<Vec<(Self::Commitment, Self::OpeningProofHint)>>
     where
-        U: Borrow<DensePolynomial<Self::Field>> + Sync;
+        U: Borrow<DensePolynomial<'a, Self::Field>> + Sync;
 
     /// Homomorphically combines multiple commitments into a single commitment, computed as a
     /// linear combination with the given coefficients.
