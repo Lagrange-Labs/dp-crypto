@@ -1,5 +1,7 @@
 use ark_ff::Field;
 use ark_std::cfg_iter_mut;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use crate::poly::Math;
 use crate::poly::unsafe_allocate_zero_vec;
@@ -23,7 +25,7 @@ pub fn evals<F: Field>(r: &[F]) -> Vec<F> {
 pub fn evals_with_scaling<F: Field>(r: &[F], scaling_factor: Option<F>) -> Vec<F> {
     #[cfg(feature = "parallel")]
     match r.len() {
-        0..=PARALLEL_THRESHOLD => evals_serial(r, scaling_factor),
+        0..=EQ_PARALLEL_THRESHOLD => evals_serial(r, scaling_factor),
         _ => evals_parallel(r, scaling_factor),
     }
     #[cfg(not(feature = "parallel"))]
@@ -52,6 +54,7 @@ pub fn evals_cached_rev<F: Field>(r: &[F]) -> Vec<Vec<F>> {
 pub fn evals_serial<F: Field>(r: &[F], scaling_factor: Option<F>) -> Vec<F> {
     let mut evals: Vec<F> = vec![scaling_factor.unwrap_or(F::one()); r.len().pow2()];
     let mut size = 1;
+    #[allow(clippy::needless_range_loop)]
     for j in 0..r.len() {
         // in each iteration, we double the size of chis
         size *= 2;

@@ -1,11 +1,11 @@
 use std::borrow::Borrow;
 
-use ark_ec::{AffineRepr};
+use ark_ec::AffineRepr;
 use ark_ff::{Field, PrimeField};
 use ark_serialize::CanonicalSerialize;
 pub mod blake3;
 
-/// Constant serialization of an infinity point. 
+/// Constant serialization of an infinity point.
 const ZERO_POINT_SERIALIZED: [u8; 16] = [0u8; 16];
 
 // TODO: add the string DST on each append()

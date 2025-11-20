@@ -16,6 +16,7 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::Rng;
 use ark_std::rand::RngCore;
 use ark_std::{One, Zero, cfg_iter, cfg_iter_mut};
+use rayon::iter::IntoParallelRefMutIterator;
 use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
@@ -167,6 +168,7 @@ fn compute_witness_polynomial<P: Pairing>(
     h
 }
 
+#[allow(clippy::type_complexity)]
 fn kzg_open_batch<P: Pairing, T: Transcript>(
     f: &[DensePolynomial<P::ScalarField>],
     u: &[P::ScalarField],
@@ -279,7 +281,11 @@ fn kzg_verify_batch<P: Pairing, ProofTranscript: Transcript>(
         .collect::<Vec<P::ScalarField>>();
 
     let l = msm::msm(
-        &[&c_points[..k], &[w_points[0], w_points[1], w_points[2], vk.kzg_vk.g]].concat(),
+        &[
+            &c_points[..k],
+            &[w_points[0], w_points[1], w_points[2], vk.kzg_vk.g],
+        ]
+        .concat(),
         &[
             &q_powers_multiplied[..k],
             &[
@@ -449,7 +455,7 @@ impl<P: Pairing> CommitmentScheme for HyperKZG<P> {
             setup.g1_powers().len(),
             poly.len()
         );
-        let comm = HyperKZGCommitment(msm::poly_msm(&setup.g1_powers(), poly)?.into_affine());
+        let comm = HyperKZGCommitment(msm::poly_msm(setup.g1_powers(), poly)?.into_affine());
         Ok((comm, ()))
     }
 
@@ -509,11 +515,8 @@ impl<P: Pairing> CommitmentScheme for HyperKZG<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        arkyper::transcript::{blake3::Blake3Transcript},
-        poly::challenge,
-    };
-    use ark_bn254::{Bn254,Fr};
+    use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
+    use ark_bn254::{Bn254, Fr};
     use ark_std::{UniformRand, rand::SeedableRng};
 
     #[test]
@@ -524,9 +527,7 @@ mod tests {
 
             let n = 1 << ell; // n = 2^ell
 
-            let poly_raw = (0..n)
-                .map(|_| Fr::rand(&mut rng))
-                .collect::<Vec<_>>();
+            let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
             let poly = DensePolynomial::from(poly_raw.clone());
             let point = (0..ell)
                 .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
@@ -537,7 +538,7 @@ mod tests {
             let (pk, vk): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
 
             // make a commitment
-            let (C, _) = HyperKZG::commit(&pk, &poly).unwrap();
+            let (comm, _) = HyperKZG::commit(&pk, &poly).unwrap();
 
             // prove an evaluation
             let mut prover_transcript = Blake3Transcript::new(b"TestEval");
@@ -546,7 +547,7 @@ mod tests {
 
             // verify the evaluation
             let mut verifier_tr = Blake3Transcript::new(b"TestEval");
-            assert!(HyperKZG::verify(&vk, &C, &point, &eval, &proof, &mut verifier_tr,).is_ok());
+            assert!(HyperKZG::verify(&vk, &comm, &point, &eval, &proof, &mut verifier_tr,).is_ok());
 
             // Change the proof and expect verification to fail
             let mut bad_proof = proof.clone();
@@ -554,7 +555,8 @@ mod tests {
             bad_proof.v[0].clone_from(&v1);
             let mut verifier_tr2 = Blake3Transcript::new(b"TestEval");
             assert!(
-                HyperKZG::verify(&vk, &C, &point, &eval, &bad_proof, &mut verifier_tr2,).is_err()
+                HyperKZG::verify(&vk, &comm, &point, &eval, &bad_proof, &mut verifier_tr2,)
+                    .is_err()
             );
         }
     }

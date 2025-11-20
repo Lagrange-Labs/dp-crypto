@@ -2,6 +2,7 @@
 #![allow(clippy::uninlined_format_args)]
 use anyhow::ensure;
 use ark_ff::Field;
+use crate::poly::eq::EQ_PARALLEL_THRESHOLD;
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, RngCore};
 use core::ops::Index;
@@ -90,8 +91,8 @@ impl<F: Field> DensePolynomial<F> {
 
     pub fn fix_mut(&mut self, r: &F, order: FixOrder) {
         match order {
-            FixOrder::LowToHigh => self.fix_low_mut(&r),
-            FixOrder::HighToLow => self.fix_high_mut(&r),
+            FixOrder::LowToHigh => self.fix_low_mut(r),
+            FixOrder::HighToLow => self.fix_high_mut(r),
         }
     }
 
@@ -160,6 +161,7 @@ impl<F: Field> DensePolynomial<F> {
         let n = self.len() / 2;
         let mut new_evals: Vec<F> = unsafe_allocate_zero_vec(n);
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             // let low' = low + r * (high - low)
             let low = self.z[i];
@@ -191,6 +193,7 @@ impl<F: Field> DensePolynomial<F> {
     pub fn fix_low(&self, r: &F) -> Self {
         let n = self.len() / 2;
         let mut new_evals = unsafe_allocate_zero_vec(n);
+        #[allow(clippy::needless_range_loop)]
         for i in 0..n {
             let low = self.z[2 * i];
             let high = self.z[2 * i + 1];
@@ -251,6 +254,7 @@ impl<F: Field> DensePolynomial<F> {
     pub fn split_eq_evaluate(&self, eq_one: &[F], eq_two: &[F]) -> F {
         #[cfg(feature = "parallel")]
         {
+            let r_len = eq_one.len() + eq_two.len();
             if r_len < EQ_PARALLEL_THRESHOLD {
                 self.evaluate_split_eq_serial(eq_one, eq_two)
             } else {
@@ -391,8 +395,8 @@ impl<F: Field> DensePolynomial<F> {
     }
 
     pub fn eval_as_univariate(&self, r: &F) -> F {
-        let mut output = self.z[0].clone();
-        let mut rpow = r.clone();
+        let mut output = self.z[0];
+        let mut rpow = *r;
         for z in self.z.iter().skip(1) {
             output += rpow * z;
             rpow *= r;
@@ -507,7 +511,6 @@ mod tests {
     use crate::poly::{Math, challenge};
     use ark_ff::PrimeField;
     use ark_std::rand::Rng;
-    use rand_chacha::rand_core::SeedableRng;
 
     use super::*;
     use ark_bn254::Fr;

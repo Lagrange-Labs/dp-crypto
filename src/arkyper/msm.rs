@@ -3,6 +3,8 @@ use std::borrow::Borrow;
 use ark_ec::{AffineRepr, CurveGroup, scalar_mul::variable_base::VariableBaseMSM};
 use ark_ff::PrimeField;
 use ark_std::cfg_iter;
+#[cfg(feature = "parallel")]
+use rayon::prelude::*;
 
 use crate::poly::dense::DensePolynomial;
 pub fn poly_msm<A: AffineRepr>(
