@@ -2,6 +2,7 @@
 #![allow(clippy::uninlined_format_args)]
 use anyhow::ensure;
 use ark_ff::Field;
+use either::Either;
 #[cfg(feature = "parallel")]
 use crate::poly::eq::EQ_PARALLEL_THRESHOLD;
 use ark_std::rand::{Rng, RngCore};
@@ -9,7 +10,23 @@ use core::ops::Index;
 use rayon::iter::IndexedParallelIterator;
 use rayon::prelude::*;
 
-use crate::poly::{eq, field::mul_01_optimized, slice::SmartSlice, unsafe_allocate_zero_vec};
+use crate::{poly::{eq, field::mul_01_optimized, slice::SmartSlice, unsafe_allocate_zero_vec}, util::ceil_log2};
+
+/// A point is a vector of num_var length
+pub type Point<F> = Vec<F>;
+
+/// A point and the evaluation of this point.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct PointAndEval<F> {
+    pub point: Point<F>,
+    pub eval: F,
+}
+
+impl<F> PointAndEval<F> {
+    pub fn new(point: Point<F>, eval: F) -> Self {
+        Self { point, eval }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FixOrder {
@@ -23,6 +40,21 @@ pub struct DensePolynomial<'a, F: Field> {
     pub num_vars: usize, // the number of variables in the multilinear polynomial
     pub len: usize,
     pub z: SmartSlice<'a, F>,
+}
+
+macro_rules! split_eval_chunks {
+    ($chunk_fn:ident, $smart_variant:ident, $smart_slice: expr, $chunk_size:expr, $num_vars:expr) => {
+        {
+            $smart_slice
+                .$chunk_fn($chunk_size)
+                .map(|chunk| DensePolynomial {
+                    z: SmartSlice::$smart_variant(chunk),
+                    len: $chunk_size,
+                    num_vars: $num_vars,
+                })
+                .collect::<Vec<_>>()
+        }
+    };
 }
 
 impl<'a, F: Field> DensePolynomial<'a, F> {
@@ -52,6 +84,10 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         Self::new_from_smart_slice(SmartSlice::Owned(poly_evals))
     }
 
+    pub fn num_vars(&self) -> usize {
+        self.num_vars
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -62,6 +98,27 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
 
     pub fn is_bound(&self) -> bool {
         self.len != self.z.len()
+    }
+
+    pub fn is_mut(&self) -> bool {
+        matches!(self.z, SmartSlice::BorrowedMut(_) | SmartSlice::Owned(_))
+    }
+
+    pub fn to_owned(&self) -> DensePolynomial<'static, F> {
+        DensePolynomial {
+            z: SmartSlice::Owned(self.z.to_vec()),
+            num_vars: self.num_vars,
+            len: self.len,
+        }
+    }
+
+    /// Returns `Right(&mut self)` if mutable access is possible, otherwise `Left(&self)`
+    pub fn to_either(&mut self) -> Either<&Self, &mut Self> {
+        if self.is_mut() {
+            Either::Right(self)
+        } else {
+            Either::Left(self)
+        }
     }
 
     /// Relabel the point in place by switching `k` scalars from position `a` to
@@ -421,6 +478,83 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
             std::iter::from_fn(|| Some(F::rand(&mut rng)))
                 .take(1 << num_vars)
                 .collect(),
+        )
+    }
+
+    pub fn as_view(&self) -> DensePolynomial<'_, F> {
+        self.as_view_slice(1, 0)
+    }
+
+    /// get mle with arbitrary start end
+    pub fn as_view_slice(
+        &self,
+        num_chunks: usize,
+        chunk_index: usize,
+    ) -> DensePolynomial<'_, F> {
+        let total_len = self.len();
+        let chunk_size = total_len / num_chunks;
+        assert!(
+            num_chunks > 0
+                && total_len.is_multiple_of(num_chunks)
+                && chunk_size > 0
+                && chunk_index < num_chunks,
+            "invalid num_chunks: {num_chunks} total_len: {total_len}, chunk_index {chunk_index} parameter set"
+        );
+        let start = chunk_size * chunk_index;
+
+        let sub_evaluations = SmartSlice::Borrowed(&self.z[start..][..chunk_size]);
+
+        DensePolynomial { 
+            num_vars: self.num_vars - num_chunks.trailing_zeros() as usize, 
+            len: chunk_size, 
+            z: sub_evaluations, 
+        }
+    }
+
+    /// splits the MLE into `num_chunks` parts, where each part contains disjoint mutable pointers
+    /// to the original data (either borrowed mutably or owned).
+    pub fn as_view_chunks_mut(&'a mut self, num_chunks: usize) -> Vec<DensePolynomial<'a, F>> {
+        let total_len = self.len();
+        let chunk_size = total_len / num_chunks;
+        assert!(
+            num_chunks > 0 && total_len.is_multiple_of(num_chunks) && chunk_size > 0,
+            "invalid num_chunks: {num_chunks} total_len: {total_len} parameter set"
+        );
+        // safety check that `chunk_size` is a power of 2; 
+        // it should always hold since `total_len` is power of 2 and `num_chunks` is a divisor of `total_len`
+        debug_assert!(chunk_size.is_power_of_two()); 
+        let num_vars_per_chunk = self.num_vars - ceil_log2(num_chunks);
+        split_eval_chunks!(
+            chunks_mut,
+            BorrowedMut,
+            &mut self.z,
+            chunk_size,
+            num_vars_per_chunk
+        )
+    }
+
+    /// immutable counterpart to [`as_view_chunks_mut`]
+    pub fn as_view_chunks<'b>(&'a self, num_chunks: usize) -> Vec<DensePolynomial<'b, F>>
+    where
+        'a: 'b,
+    {
+        let total_len = self.len();
+        let chunk_size = total_len / num_chunks;
+        assert!(
+            num_chunks > 0 && total_len.is_multiple_of(num_chunks) && chunk_size > 0,
+            "invalid num_chunks: {num_chunks} total_len: {total_len} parameter set"
+        );
+        // safety check that `chunk_size` is a power of 2; 
+        // it should always hold since `total_len` is power of 2 and `num_chunks` is a divisor of `total_len`
+        debug_assert!(chunk_size.is_power_of_two()); 
+        let num_vars_per_chunk = self.num_vars - ceil_log2(num_chunks);
+    
+        split_eval_chunks!(
+            chunks,
+            Borrowed,
+            self.z,
+            chunk_size,
+            num_vars_per_chunk
         )
     }
 
