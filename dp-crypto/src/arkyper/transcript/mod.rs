@@ -60,6 +60,12 @@ pub trait Transcript {
             self.append_bytes(&buff);
         }
     }
+
+    // Append the input message to the transcript and then sample a challenge scalar
+    fn append_and_sample<F: PrimeField>(&mut self, append_msg: &[u8]) -> F {
+        self.append_bytes(append_msg);
+        self.challenge_scalar()
+    }
 }
 
 pub trait AppendToTranscript {

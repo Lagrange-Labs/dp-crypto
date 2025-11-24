@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use ark_ff::UniformRand;
+use ark_std::rand::thread_rng;
 use criterion::*;
 use dp_crypto::virtual_poly::{build_eq_x_r_vec, build_eq_x_r_vec_sequential};
-use ark_std::rand::thread_rng;
 
 criterion_group!(benches, build_eq_fn,);
 criterion_main!(benches);
@@ -19,9 +19,7 @@ fn build_eq_fn(c: &mut Criterion) {
         group.sample_size(NUM_SAMPLES);
 
         let mut rng = thread_rng();
-        let r = (0..nv)
-            .map(|_| F::rand(&mut rng))
-            .collect::<Vec<_>>();
+        let r = (0..nv).map(|_| F::rand(&mut rng)).collect::<Vec<_>>();
 
         group.bench_function(
             BenchmarkId::new("build_eq", format!("par_nv_{}", nv)),

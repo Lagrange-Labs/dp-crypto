@@ -1,0 +1,56 @@
+[package]
+name = "dp-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ark-bn254.workspace = true
+ark-std.workspace = true
+ark-ec = { version = "0.5.0", features = ["std"]}
+ark-ff.workspace = true
+ark-poly = { version = "0.5.0", features = ["std"]}
+anyhow = "^1.0"
+blake3 = "^1.8"
+tracing = "^0.1"
+rayon = "^1.11"
+ark-serialize = { version = "0.5.0", features = ["derive"] }
+ark-poly-commit = "0.5.0"
+rand_chacha = "0.3.1"
+itertools.workspace = true
+serde = {version = "^1.0", features = ["derive", "rc"]}
+num-bigint = "0.4.6"
+either = { version = "1.15.0", features = ["serde"] }
+thiserror = "2.0.17"
+proc-macro2 = "1.0.103"
+quote = "1.0.42"
+divan = "0.1.21"
+syn = { version = "2.0.110", features = ["full"] }
+sumcheck_macro.workspace = true
+
+[features]
+default = ["mono"]
+parallel = [
+    "ark-ec/parallel",
+    "ark-ff/parallel",
+    "ark-poly/parallel",
+    "ark-std/parallel",
+]
+mono = []
+
+[dev-dependencies]
+criterion = { version = "0.7.0", features = ["html_reports"]}
+env_logger = "0.11.8"
+rstest = "0.26.1"
+serde_json = "^1.0"
+
+[[bench]]
+harness = false
+name = "devirgo_sumcheck"
+
+[[bench]]
+harness = false
+name = "eq"
+
+[[bench]]
+name = "dense"
+harness = false

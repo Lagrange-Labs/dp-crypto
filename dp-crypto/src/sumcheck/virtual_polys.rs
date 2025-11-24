@@ -1,18 +1,26 @@
 use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 
-use crate::{sumcheck::{
-    Expression, WitnessId, expression::monomial::Term, macros::{entered_span, exit_span}, random_mle_list, util::{ceil_log2, log2_strict}, utils::eval_by_expr_with_instance, virtual_poly::{MonomialTerms, VirtualPolynomial}
-}, poly::dense::DensePolynomial};
+use crate::{
+    poly::dense::DensePolynomial,
+    sumcheck::{
+        Expression, WitnessId,
+        expression::monomial::Term,
+        macros::{entered_span, exit_span},
+        random_mle_list,
+        util::{ceil_log2, log2_strict},
+        utils::eval_by_expr_with_instance,
+        virtual_poly::{MonomialTerms, VirtualPolynomial},
+    },
+};
 use ark_ff::PrimeField;
+use ark_std::rand::Rng;
 use either::Either;
 use itertools::Itertools;
-use ark_std::rand::Rng;
 
 pub type MonomialTermsType<S, P> = Vec<Term<S, P>>;
 pub type MonomialTermsExpr<F> = Vec<Term<F, Expression<F>>>;
 pub type MonomialTermsMLE<F, MLE> = Vec<Term<F, MLE>>;
-pub type EitherRefMLE<'a, MLE> =
-    Either<&'a MLE, &'a mut MLE>;
+pub type EitherRefMLE<'a, MLE> = Either<&'a MLE, &'a mut MLE>;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub enum PolyMeta {
@@ -63,15 +71,15 @@ impl<'a, F: PrimeField> VirtualPolynomialsBuilder<'a, F> {
     ///
     /// assigns a unique witness index based on pointer address, reusing the same index
     /// if the MLE was already lifted. supports both shared and mutable references.
-    pub fn lift(
-        &mut self,
-        mle: EitherRefMLE<'a, DensePolynomial<'a, F>>,
-    ) -> Expression<F> {
+    pub fn lift(&mut self, mle: EitherRefMLE<'a, DensePolynomial<'a, F>>) -> Expression<F> {
         mle.map_left(|mle| {
             let mle_ptr = mle as *const DensePolynomial<F> as usize;
             let (witin_id, _) = self.mle_ptr_registry.entry(mle_ptr).or_insert_with(|| {
                 let witin_id = self.num_witin;
-                self.num_witin = self.num_witin.checked_add(1).expect("Should not overflow when incrementing witness id");
+                self.num_witin = self
+                    .num_witin
+                    .checked_add(1)
+                    .expect("Should not overflow when incrementing witness id");
                 (witin_id as usize, Either::Left(mle))
             });
             Expression::WitIn(*witin_id as WitnessId)
@@ -80,7 +88,10 @@ impl<'a, F: PrimeField> VirtualPolynomialsBuilder<'a, F> {
             let mle_ptr = mle as *const DensePolynomial<F> as usize;
             let (witin_id, _) = self.mle_ptr_registry.entry(mle_ptr).or_insert_with(|| {
                 let witin_id = self.num_witin;
-                self.num_witin = self.num_witin.checked_add(1).expect("Should not overflow when incrementing witness id");
+                self.num_witin = self
+                    .num_witin
+                    .checked_add(1)
+                    .expect("Should not overflow when incrementing witness id");
                 (witin_id as usize, Either::Right(mle))
             });
             Expression::WitIn(*witin_id as WitnessId)
@@ -336,19 +347,25 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
                     .as_ref()
                     .clone(),
             })
-            .map(|mle| {
-                mle.evaluate(&point[point.len() - mle.num_vars()..])
-            })
+            .map(|mle| mle.evaluate(&point[point.len() - mle.num_vars()..]))
             .collect::<anyhow::Result<Vec<_>>>()?;
         // evaluate based on monimial expression
         Ok(self.polys[0]
             .products
             .iter()
-            .map(|MonomialTerms { terms }|
-                terms.iter().map(|Term { scalar, product }|
-                    product.iter().map(|index| raw_mles_evals[*index]).product::<F>() **scalar 
-                ).sum::<F>()
-            ).sum())
+            .map(|MonomialTerms { terms }| {
+                terms
+                    .iter()
+                    .map(|Term { scalar, product }| {
+                        product
+                            .iter()
+                            .map(|index| raw_mles_evals[*index])
+                            .product::<F>()
+                            * *scalar
+                    })
+                    .sum::<F>()
+            })
+            .sum())
     }
 
     /// Sample a random virtual polynomial, return the polynomial and its sum.
@@ -367,8 +384,7 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
             for _ in 0..num_products {
                 let num_multiplicands =
                     rng.gen_range(num_multiplicands_range.0..num_multiplicands_range.1);
-                let (product, product_sum) =
-                    random_mle_list(*nv, num_multiplicands, rng);
+                let (product, product_sum) = random_mle_list(*nv, num_multiplicands, rng);
                 let scalar = F::rand(&mut *rng);
                 monimial_term.push(Term { scalar, product });
                 // need to scale up for the smaller nv

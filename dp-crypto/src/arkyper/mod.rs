@@ -26,9 +26,9 @@ pub mod interface;
 pub mod msm;
 pub mod transcript;
 pub use interface::*;
-use transcript::Transcript;
 #[cfg(feature = "parallel")]
 use rayon::iter::IntoParallelRefMutIterator;
+use transcript::Transcript;
 
 // just a type needed to create the SRS
 #[allow(dead_code)]

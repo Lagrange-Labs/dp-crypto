@@ -1,5 +1,3 @@
-
-
 macro_rules! entered_span {
     ($first:expr $(, $($fields:tt)*)?) => {
         tracing_span!($first, $($($fields)*)?).entered()
@@ -13,7 +11,9 @@ macro_rules! tracing_span {
 }
 
 macro_rules! exit_span {
-    ($first:expr $(,)*) => { $first.exit() };
+    ($first:expr $(,)*) => {
+        $first.exit()
+    };
 }
 
 pub(crate) use entered_span;

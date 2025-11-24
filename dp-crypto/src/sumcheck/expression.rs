@@ -1,14 +1,18 @@
 pub mod monomial;
 pub mod utils;
 
-use crate::{sumcheck::{
-    ArcMultilinearExtension, monomial::Term, monomialize_expr_to_wit_terms, utils::eval_by_expr_constant
-}, poly::dense::DensePolynomial};
+use crate::{
+    poly::dense::DensePolynomial,
+    sumcheck::{
+        ArcMultilinearExtension, monomial::Term, monomialize_expr_to_wit_terms,
+        utils::eval_by_expr_constant,
+    },
+};
 use ark_ff::PrimeField;
 use itertools::{Itertools, chain, izip};
 use num_bigint::BigUint;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use serde::{Serialize, Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     cmp::max,
     fmt::{Debug, Display},
@@ -537,12 +541,7 @@ impl<F: PrimeField> Add for Expression<F> {
             | (
                 Expression::Challenge(challenge_id, pow, scalar, offset),
                 Expression::Constant(c1),
-            ) => Expression::Challenge(
-                *challenge_id,
-                *pow,
-                *scalar,
-                *offset + c1,
-            ),
+            ) => Expression::Challenge(*challenge_id, *pow, *scalar, *offset + c1),
 
             // challenge + challenge
             (
@@ -562,9 +561,7 @@ impl<F: PrimeField> Add for Expression<F> {
             }
 
             // constant + constant
-            (Expression::Constant(c1), Expression::Constant(c2)) => {
-                Expression::Constant(*c1 + *c2)
-            }
+            (Expression::Constant(c1), Expression::Constant(c2)) => Expression::Constant(*c1 + *c2),
 
             // constant + scaled sum
             (c1 @ Expression::Constant(_), Expression::ScaledSum(x, a, b))
@@ -686,23 +683,13 @@ impl<F: PrimeField> Sub for Expression<F> {
             (
                 Expression::Constant(c1),
                 Expression::Challenge(challenge_id, pow, scalar, offset),
-            ) => Expression::Challenge(
-                *challenge_id,
-                *pow,
-                *scalar,
-                offset.neg() + c1,
-            ),
+            ) => Expression::Challenge(*challenge_id, *pow, *scalar, offset.neg() + c1),
 
             // challenge - constant
             (
                 Expression::Challenge(challenge_id, pow, scalar, offset),
                 Expression::Constant(c1),
-            ) => Expression::Challenge(
-                *challenge_id,
-                *pow,
-                *scalar,
-                *offset - c1,
-            ),
+            ) => Expression::Challenge(*challenge_id, *pow, *scalar, *offset - c1),
 
             // challenge - challenge
             (
@@ -722,9 +709,7 @@ impl<F: PrimeField> Sub for Expression<F> {
             }
 
             // constant - constant
-            (Expression::Constant(c1), Expression::Constant(c2)) => {
-                Expression::Constant(*c1 - *c2)
-            }
+            (Expression::Constant(c1), Expression::Constant(c2)) => Expression::Constant(*c1 - *c2),
 
             // constant - scalesum
             (c1 @ Expression::Constant(_), Expression::ScaledSum(x, a, b)) => {
@@ -905,12 +890,7 @@ impl<F: PrimeField> Mul for Expression<F> {
             | (
                 Expression::Challenge(challenge_id, pow, scalar, offset),
                 Expression::Constant(c1),
-            ) => Expression::Challenge(
-                *challenge_id,
-                *pow,
-                *scalar * c1,
-                *offset * c1,
-            ),
+            ) => Expression::Challenge(*challenge_id, *pow, *scalar * c1, *offset * c1),
             // challenge * challenge
             (
                 Expression::Challenge(challenge_id1, pow1, s1, offset1),
@@ -961,9 +941,7 @@ impl<F: PrimeField> Mul for Expression<F> {
             }
 
             // constant * constant
-            (Expression::Constant(c1), Expression::Constant(c2)) => {
-                Expression::Constant(*c1 * *c2)
-            }
+            (Expression::Constant(c1), Expression::Constant(c2)) => Expression::Constant(*c1 * *c2),
             // scaledsum * constant
             (Expression::ScaledSum(x, a, b), c2 @ Expression::Constant(_))
             | (c2 @ Expression::Constant(_), Expression::ScaledSum(x, a, b)) => {
@@ -1095,8 +1073,7 @@ fn eval_expr_at_index<F: PrimeField>(
     i: usize,
     witness: &[ArcMultilinearExtension<F>],
     challenges: &[F],
-) -> F
-{
+) -> F {
     match expr {
         Expression::Challenge(c_id, pow, scalar, offset) => {
             challenges[*c_id as usize].pow(vec![*pow as u64]) * *scalar + *offset
@@ -1119,8 +1096,7 @@ pub fn wit_infer_by_monomial_expr<'a, F: PrimeField>(
     witness: &[ArcMultilinearExtension<'a, F>],
     instance: &[ArcMultilinearExtension<'a, F>],
     challenges: &[F],
-) -> ArcMultilinearExtension<'a, F> 
-{
+) -> ArcMultilinearExtension<'a, F> {
     let eval_leng = witness[0].len();
 
     let witness = chain!(witness, instance).cloned().collect_vec();
@@ -1142,25 +1118,21 @@ pub fn wit_infer_by_monomial_expr<'a, F: PrimeField>(
     let evaluations: Vec<_> = (0..eval_leng)
         .into_par_iter()
         .map(|i| {
-            let eval = flat_expr
-                .iter()
-                .enumerate()
-                .fold(F::ZERO, |acc, (term_index, Term { product, .. })| {
+            flat_expr.iter().enumerate().fold(
+                F::ZERO,
+                |acc, (term_index, Term { product, .. })| {
                     let scalar_val = scalar_evals[term_index];
-                    let prod_val =
-                        product
-                            .iter()
-                            .fold(F::ONE, |acc, e| {
-                                let v = eval_expr_at_index(e, i, &witness, challenges);
-                                v * acc
-                            });
+                    let prod_val = product.iter().fold(F::ONE, |acc, e| {
+                        let v = eval_expr_at_index(e, i, &witness, challenges);
+                        v * acc
+                    });
 
                     // term := scalar_val * prod_val
                     let term = scalar_val * prod_val;
 
                     acc + term
-                });
-            eval
+                },
+            )
         })
         .collect();
 
@@ -1182,8 +1154,7 @@ pub fn wit_infer_by_expr<'a, F: PrimeField>(
     structual_witnesses: &[ArcMultilinearExtension<'a, F>],
     instance: &[ArcMultilinearExtension<'a, F>],
     challenges: &[F],
-) -> ArcMultilinearExtension<'a, F>
-{
+) -> ArcMultilinearExtension<'a, F> {
     let witin = chain!(witnesses, structual_witnesses, fixed)
         .cloned()
         .collect_vec();
@@ -1211,9 +1182,7 @@ pub fn rlc_chip_record<F: PrimeField>(
 }
 
 /// derive power sequence [1, base, base^2, ..., base^(len-1)] of base expression
-pub fn power_sequence<F: PrimeField>(
-    base: Expression<F>,
-) -> impl Iterator<Item = Expression<F>> {
+pub fn power_sequence<F: PrimeField>(base: Expression<F>) -> impl Iterator<Item = Expression<F>> {
     assert!(
         matches!(
             base,
@@ -1373,11 +1342,14 @@ pub mod fmt {
 
 #[cfg(test)]
 mod tests {
-    use crate::{sumcheck::{WitIn, wit_infer_by_expr}, poly::dense::DensePolynomial};
+    use crate::{
+        poly::dense::DensePolynomial,
+        sumcheck::{WitIn, wit_infer_by_expr},
+    };
 
     use super::{Expression, ToExpr, fmt};
     use ark_ff::{AdditiveGroup, Field};
-    
+
     #[test]
     fn test_expression_arithmetics() {
         type F = ark_bn254::Fq;
@@ -1555,9 +1527,6 @@ mod tests {
             &[],
             &[F::ONE],
         );
-        assert_eq!(
-            res.len(), 
-            1
-        );
+        assert_eq!(res.len(), 1);
     }
 }

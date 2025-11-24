@@ -1,25 +1,30 @@
-use std::{cmp::max, collections::HashMap, fmt::Debug, marker::PhantomData, mem::MaybeUninit, sync::Arc};
+use std::{
+    cmp::max, collections::HashMap, fmt::Debug, marker::PhantomData, mem::MaybeUninit, sync::Arc,
+};
 
-use crate::{sumcheck::{
-    ArcMultilinearExtension, Expression, WitnessId, macros::{entered_span, exit_span}, monomial::Term, random_mle_list, util::{bit_decompose, create_uninit_vec, max_usable_threads}
-}, poly::dense::DensePolynomial};
-use ark_ff::{PrimeField, Field};
-use itertools::Itertools;
+use crate::{
+    poly::dense::DensePolynomial,
+    sumcheck::{
+        ArcMultilinearExtension, Expression, WitnessId,
+        macros::{entered_span, exit_span},
+        monomial::Term,
+        random_mle_list,
+        util::{bit_decompose, create_uninit_vec, max_usable_threads},
+    },
+};
+use ark_ff::{Field, PrimeField};
 use ark_std::rand::Rng;
+use itertools::Itertools;
 use rayon::{
     iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
-pub type MonomialTermsType<F> =
-    Vec<Term<F, Expression<F>>>;
+pub type MonomialTermsType<F> = Vec<Term<F, Expression<F>>>;
 
 #[derive(Default, Clone, Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "F: Serialize",
-    deserialize = "F: DeserializeOwned"
-))]
+#[serde(bound(serialize = "F: Serialize", deserialize = "F: DeserializeOwned"))]
 pub struct MonomialTerms<F: PrimeField> {
     pub terms: Vec<Term<F, usize>>,
 }
@@ -51,6 +56,7 @@ pub struct MonomialTerms<F: PrimeField> {
 ///   \ ]
 /// - raw_pointers_lookup_table maps fi to i
 ///
+#[derive(Default, Clone)]
 pub struct VirtualPolynomial<'a, F: PrimeField> {
     /// Aux information about the multilinear polynomial
     pub aux_info: VPAuxInfo<F>,
@@ -140,14 +146,9 @@ impl<'a, F: PrimeField> VirtualPolynomial<'a, F> {
     pub fn add_mle_list(&mut self, product: Vec<ArcMultilinearExtension<'a, F>>, scalar: F) {
         let product: Vec<Expression<F>> = product
             .into_iter()
-            .map(|mle| {
-                Expression::WitIn(self.register_mle(mle) as u16)
-            })
+            .map(|mle| Expression::WitIn(self.register_mle(mle) as u16))
             .collect_vec();
-        self.add_monomial_terms(vec![Term {
-            scalar,
-            product,
-        }]);
+        self.add_monomial_terms(vec![Term { scalar, product }]);
     }
 
     /// Multiple the current VirtualPolynomial by an MLE:
@@ -182,7 +183,7 @@ impl<'a, F: PrimeField> VirtualPolynomial<'a, F> {
             // - add the MLE to the MLE list;
             // - multiple each product by MLE and its coefficient.
             for term in product.terms.iter_mut() {
-                term.scalar = term.scalar * coefficient;
+                term.scalar *= coefficient;
                 term.product.push(mle_index);
             }
         }
@@ -257,16 +258,17 @@ impl<'a, F: PrimeField> VirtualPolynomial<'a, F> {
         let res = self
             .products
             .iter()
-            .map(| MonomialTerms { terms }| {
+            .map(|MonomialTerms { terms }| {
                 terms
                     .iter()
                     .map(|Term { scalar, product }| {
                         product.iter().map(|&i| evals[i]).product::<F>() * *scalar
                     })
-                    .reduce(|a, b| a+b)
+                    .reduce(|a, b| a + b)
                     .unwrap_or(F::ZERO)
             })
-            .reduce(|a, b| a+b).unwrap_or(F::ZERO);
+            .reduce(|a, b| a + b)
+            .unwrap_or(F::ZERO);
 
         exit_span!(start);
         Ok(res)
@@ -323,21 +325,15 @@ impl<'a, F: PrimeField> VirtualPolynomial<'a, F> {
             for _ in 0..num_products {
                 let num_multiplicands =
                     rng.gen_range(num_multiplicands_range.0..num_multiplicands_range.1);
-                let (product, product_sum) =
-                    random_mle_list(*nv, num_multiplicands, rng);
+                let (product, product_sum) = random_mle_list(*nv, num_multiplicands, rng);
                 let product = product.into_iter().map(Arc::new).collect_vec();
                 let product: Vec<Expression<F>> = product
                     .into_iter()
                     .map(|mle| mle as _)
-                    .map(|mle| {
-                        Expression::WitIn(poly.register_mle(mle) as WitnessId)
-                    })
+                    .map(|mle| Expression::WitIn(poly.register_mle(mle) as WitnessId))
                     .collect_vec();
                 let scalar = F::rand(&mut *rng);
-                poly.add_monomial_terms(vec![Term {
-                    scalar,
-                    product,
-                }]);
+                poly.add_monomial_terms(vec![Term { scalar, product }]);
                 sum += product_sum * scalar;
             }
         }
@@ -556,9 +552,7 @@ mod tests {
         let mut rng = thread_rng();
 
         for num_vars in 10..24 {
-            let r = (0..num_vars)
-                .map(|_| F::rand(&mut rng))
-                .collect::<Vec<F>>();
+            let r = (0..num_vars).map(|_| F::rand(&mut rng)).collect::<Vec<F>>();
             let eq_r_seq = build_eq_x_r_vec_sequential(&r);
             let eq_r_par = build_eq_x_r_vec(&r);
             assert_eq!(eq_r_par, eq_r_seq);

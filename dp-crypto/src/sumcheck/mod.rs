@@ -1,19 +1,23 @@
 #![deny(clippy::cargo)]
 pub mod expression;
+pub mod extrapolate;
 
 use std::sync::Arc;
 
 use ark_ff::{Field, PrimeField};
-pub use expression::{utils::monomialize_expr_to_wit_terms, *};
 use ark_std::rand::Rng;
+pub use expression::{utils::monomialize_expr_to_wit_terms, *};
 
 use macros::{entered_span, exit_span};
 
 use crate::poly::dense::DensePolynomial;
 #[macro_use]
 pub mod macros;
+pub mod prover;
+pub mod structs;
 //pub mod mle;
 pub mod util;
+pub mod verifier;
 pub mod virtual_poly;
 pub mod virtual_polys;
 
@@ -36,9 +40,7 @@ pub trait IntoMLEs<T>: Sized {
     fn into_mles(self) -> Vec<T>;
 }
 
-impl<'a, F: Field> IntoMLEs<DensePolynomial<'a, F>>
-    for Vec<Vec<F>>
-{
+impl<'a, F: Field> IntoMLEs<DensePolynomial<'a, F>> for Vec<Vec<F>> {
     fn into_mles(self) -> Vec<DensePolynomial<'a, F>> {
         self.into_iter().map(|v| v.into_mle()).collect()
     }
@@ -48,10 +50,10 @@ impl<'a, F: Field> IntoMLEs<DensePolynomial<'a, F>>
 /// Returns
 /// - the list of polynomials,
 /// - its sum of polynomial evaluations over the boolean hypercube.
-pub fn random_mle_list<'a, 'b, R: Rng, F: PrimeField>(
+pub fn random_mle_list<'b, R: Rng, F: PrimeField>(
     nv: usize,
     degree: usize,
-    rng: &'a mut R,
+    rng: &mut R,
 ) -> (Vec<DensePolynomial<'b, F>>, F) {
     let start = entered_span!("sample random mle list");
     let mut multiplicands = Vec::with_capacity(degree);
@@ -79,7 +81,6 @@ pub fn random_mle_list<'a, 'b, R: Rng, F: PrimeField>(
     exit_span!(start);
     (list, sum)
 }
-
 
 #[cfg(test)]
 mod test;

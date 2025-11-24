@@ -33,7 +33,7 @@ pub fn eval_by_expr_constant<F: PrimeField>(
         },
         &|a, b| a + b,
         &|a, b| a * b,
-        &|x, a, b| a*x+b,
+        &|x, a, b| a * x + b,
     )
 }
 
@@ -60,9 +60,7 @@ pub fn eval_by_expr_with_fixed<F: PrimeField>(
         &|f| fixed[f.0],
         &|witness_id| witnesses[witness_id as usize],
         &|witness_id, _, _, _| structural_witnesses[witness_id as usize],
-        &|scalar| {
-            scalar
-        },
+        &|scalar| scalar,
         &|challenge_id, pow, scalar, offset| {
             // TODO cache challenge power to be acquired once for each power
             let challenge = challenges[challenge_id as usize];
@@ -95,7 +93,7 @@ pub fn eval_by_expr_with_instance<F: PrimeField>(
         },
         &|a, b| a + b,
         &|a, b| a * b,
-        &|x, a, b| a*x + b,
+        &|x, a, b| a * x + b,
     )
 }
 

@@ -168,11 +168,7 @@ mod tests {
     fn make_eval() -> impl Fn(&Expression<F>) -> F {
         // Create a deterministic RNG from a seed.
         let mut rng = thread_rng();
-        let fixed = vec![
-            F::rand(&mut rng),
-            F::rand(&mut rng),
-            F::rand(&mut rng),
-        ];
+        let fixed = vec![F::rand(&mut rng), F::rand(&mut rng), F::rand(&mut rng)];
         let witnesses = vec![
             F::rand(&mut rng),
             F::rand(&mut rng),
@@ -182,11 +178,7 @@ mod tests {
             F::rand(&mut rng),
             F::rand(&mut rng),
         ];
-        let challenges = vec![
-            F::rand(&mut rng),
-            F::rand(&mut rng),
-            F::rand(&mut rng),
-        ];
+        let challenges = vec![F::rand(&mut rng), F::rand(&mut rng), F::rand(&mut rng)];
         move |expr: &Expression<F>| {
             eval_by_expr_with_fixed(&fixed, &witnesses, &[], &challenges, expr)
         }
