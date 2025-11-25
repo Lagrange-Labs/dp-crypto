@@ -214,7 +214,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
 
     pub fn bound_poly_var_bot_01_optimized(&mut self, r: &F) {
         let n = self.len() / 2;
-        let mut bound_z = Vec::with_capacity(n);
+        let mut bound_z: Vec<F> = unsafe_allocate_zero_vec(n);
         (bound_z.spare_capacity_mut(), self.z.par_chunks_exact(2))
             .into_par_iter()
             .with_min_len(512)
@@ -315,11 +315,18 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
 
         // r must have a value for each variable
         assert_eq!(r.len(), self.num_vars);
-        let m = r.len();
-        if m < PARALLEL_THRESHOLD {
+        #[cfg(feature = "parallel")]
+        {
+            let m = r.len();
+            if m < PARALLEL_THRESHOLD {
+                self.inside_out_serial(r)
+            } else {
+                self.inside_out_parallel(r)
+            }
+        }
+        #[cfg(not(feature = "parallel"))]
+        {
             self.inside_out_serial(r)
-        } else {
-            self.inside_out_parallel(r)
         }
     }
 

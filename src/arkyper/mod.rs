@@ -345,11 +345,6 @@ impl<P: Pairing> HyperKZG<P> {
         assert_eq!(polys.len(), ell);
         assert_eq!(polys[ell - 1].len(), 2);
 
-        println!(
-            "polys.all().len(): {:?}",
-            polys.iter().map(|p| p.len()).collect::<Vec<usize>>()
-        );
-        println!("powers.len(): {:?}", pk.g1_powers().len());
         // We do not need to commit to the first polynomial as it is already committed.
         let coms = msm::batch_poly_msm(pk.g1_powers(), &polys[1..])?;
         let coms_aff = coms

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
-mod arkyper;
-mod poly;
+pub mod arkyper;
+pub mod poly;
 
 pub fn add(left: u64, right: u64) -> u64 {
     left + right

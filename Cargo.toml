@@ -9,14 +9,15 @@ ark-std = { version = "0.5.0", features = ["std","getrandom"]}
 ark-ec = { version = "0.5.0", features = ["std"]}
 ark-ff = { version = "0.5.0", features = ["std"] }
 ark-poly = { version = "0.5.0", features = ["std"]}
-anyhow = "1.0.100"
-blake3 = "1.8.2"
-tracing = "0.1.41"
-rayon = "1.11.0"
+anyhow = "^1.0"
+blake3 = "^1.8"
+tracing = "^0.1"
+rayon = "^1.11"
 ark-serialize = { version = "0.5.0", features = ["derive"] }
 ark-poly-commit = "0.5.0"
 rand_chacha = "0.3.1"
-serde = { version = "1.0.228", features = ["derive"] }
+serde = { version = "^1.0", features = ["derive"] }
+divan = "0.1.21"
 
 [features]
 default = ["mono"]
@@ -29,4 +30,8 @@ parallel = [
 mono = []
 
 [dev-dependencies]
-serde_json = "1.0.145"
+serde_json = "^1.0"
+
+[[bench]]
+name = "dense"
+harness = false
