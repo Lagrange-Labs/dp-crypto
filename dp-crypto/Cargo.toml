@@ -26,6 +26,15 @@ quote = "1.0.42"
 divan = "0.1.21"
 syn = { version = "2.0.110", features = ["full"] }
 sumcheck_macro.workspace = true
+sumcheck = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+multilinear_extensions = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+ff_ext = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+transcript = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+p3 = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+expander-arith = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "arith", features = ["halo2_asm"], optional = true }
+expander-poly = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "polynomials", optional = true }
+expander-hasher = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "gkr_hashers", optional = true }
+expander-sumcheck = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "sumcheck_generic", optional = true }
 
 [features]
 default = ["mono"]
@@ -35,6 +44,7 @@ parallel = [
     "ark-poly/parallel",
     "ark-std/parallel",
 ]
+nightly-benches = ["parallel", "dep:sumcheck", "dep:multilinear_extensions", "dep:ff_ext", "dep:transcript", "dep:p3", "dep:expander-arith", "dep:expander-poly", "dep:expander-hasher", "dep:expander-sumcheck" ]
 mono = []
 
 [dev-dependencies]
@@ -42,6 +52,9 @@ criterion = { version = "0.7.0", features = ["html_reports"]}
 env_logger = "0.11.8"
 rstest = "0.26.1"
 serde_json = "^1.0"
+ark-sumcheck = { git = "https://github.com/eigmax/sumcheck.git", features = ["std", "parallel"] }
+hyperplonk = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "subroutines" }
+hyper-arith = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "arithmetic" }
 
 [[bench]]
 harness = false
@@ -53,4 +66,8 @@ name = "eq"
 
 [[bench]]
 name = "dense"
+harness = false
+
+[[bench]]
+name = "sumcheck"
 harness = false

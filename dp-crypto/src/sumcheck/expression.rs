@@ -1118,9 +1118,10 @@ pub fn wit_infer_by_monomial_expr<'a, F: PrimeField>(
     let evaluations: Vec<_> = (0..eval_leng)
         .into_par_iter()
         .map(|i| {
-            flat_expr.iter().enumerate().fold(
-                F::ZERO,
-                |acc, (term_index, Term { product, .. })| {
+            flat_expr
+                .iter()
+                .enumerate()
+                .fold(F::ZERO, |acc, (term_index, Term { product, .. })| {
                     let scalar_val = scalar_evals[term_index];
                     let prod_val = product.iter().fold(F::ONE, |acc, e| {
                         let v = eval_expr_at_index(e, i, &witness, challenges);
@@ -1131,8 +1132,7 @@ pub fn wit_infer_by_monomial_expr<'a, F: PrimeField>(
                     let term = scalar_val * prod_val;
 
                     acc + term
-                },
-            )
+                })
         })
         .collect();
 
