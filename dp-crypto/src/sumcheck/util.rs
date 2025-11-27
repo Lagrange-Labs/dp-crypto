@@ -7,6 +7,7 @@ use std::{
 
 use ark_ff::PrimeField;
 use itertools::Itertools;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::{
     arkyper::transcript::Transcript, poly::dense::DensePolynomial, structs::IOPProverState,
@@ -142,33 +143,39 @@ pub fn merge_sumcheck_polys<'a, F: PrimeField>(
         })
         .expect("unreachable");
 
-    for (i, poly_meta) in (0..virtual_polys[0].flattened_ml_extensions.len()).zip_eq(&poly_meta) {
-        final_poly.aux_info.max_num_variables =
-            final_poly.aux_info.max_num_variables.max(merged_num_vars);
-        let ml_ext = match poly_meta {
-            PolyMeta::Normal => DensePolynomial::new(
-                virtual_polys
-                    .iter()
-                    .flat_map(|virtual_poly| {
-                        let mle = &virtual_poly.flattened_ml_extensions[i];
-                        mle.evals()
-                    })
-                    .collect::<Vec<F>>(),
-            ),
-            PolyMeta::Phase2Only => {
-                let poly = &virtual_polys[0].flattened_ml_extensions[i];
-                assert!(poly.num_vars() <= log2_poly_len);
-                let blowup_factor = 1 << (merged_num_vars - poly.num_vars());
-                DensePolynomial::new(
-                    poly.evals_ref()
+    final_poly.aux_info.max_num_variables =
+        final_poly.aux_info.max_num_variables.max(merged_num_vars);
+
+    final_poly
+        .flattened_ml_extensions
+        .par_iter_mut()
+        .zip_eq(&poly_meta)
+        .enumerate()
+        .for_each(|(i, (ml, poly_meta))| {
+            let ml_ext = match poly_meta {
+                PolyMeta::Normal => DensePolynomial::new(
+                    virtual_polys
                         .iter()
-                        .flat_map(|e| std::iter::repeat_n(*e, blowup_factor))
-                        .collect_vec(),
-                )
-            }
-        };
-        final_poly.flattened_ml_extensions[i] = ml_ext.into();
-    }
+                        .flat_map(|virtual_poly| {
+                            let mle = &virtual_poly.flattened_ml_extensions[i];
+                            mle.evals()
+                        })
+                        .collect::<Vec<F>>(),
+                ),
+                PolyMeta::Phase2Only => {
+                    let poly = &virtual_polys[0].flattened_ml_extensions[i];
+                    assert!(poly.num_vars() <= log2_poly_len);
+                    let blowup_factor = 1 << (merged_num_vars - poly.num_vars());
+                    DensePolynomial::new(
+                        poly.evals_ref()
+                            .iter()
+                            .flat_map(|e| std::iter::repeat_n(*e, blowup_factor))
+                            .collect_vec(),
+                    )
+                }
+            };
+            *ml = ml_ext.into();
+        });
     final_poly
 }
 

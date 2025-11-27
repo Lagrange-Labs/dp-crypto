@@ -60,7 +60,7 @@ impl<'a, F: PrimeField> Phase1Workers<'a, F> {
                     if let Some(challenge) = s.challenge.take() {
                         s.prover_state.push_challenges(vec![challenge]);
                         // fix last challenge to collect final evaluation
-                        s.prover_state.fix_var(&challenge);
+                        s.prover_state.fix_var_parallel(&challenge);
                     }
                     s.prover_state
                 })
@@ -94,8 +94,10 @@ impl<'a, F: PrimeField> Phase1WorkerState<'a, F> {
     }
 
     fn run_round(&mut self) -> AdditiveVec<F> {
-        let prover_msg =
-            IOPProverState::prove_round_and_update_state(&mut self.prover_state, &self.challenge);
+        let prover_msg = IOPProverState::prove_round_and_update_state_parallel(
+            &mut self.prover_state,
+            &self.challenge,
+        );
         AdditiveVec(prover_msg.evaluations)
     }
 }

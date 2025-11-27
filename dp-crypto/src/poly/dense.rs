@@ -522,6 +522,36 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         }
     }
 
+    pub fn as_view_mut(&mut self) -> DensePolynomial<'_, F> {
+        self.as_view_slice_mut(1, 0)
+    }
+
+    /// get mle with arbitrary start end
+    pub fn as_view_slice_mut(
+        &mut self,
+        num_chunks: usize,
+        chunk_index: usize,
+    ) -> DensePolynomial<'_, F> {
+        let total_len = self.len();
+        let chunk_size = total_len / num_chunks;
+        assert!(
+            num_chunks > 0
+                && total_len.is_multiple_of(num_chunks)
+                && chunk_size > 0
+                && chunk_index < num_chunks,
+            "invalid num_chunks: {num_chunks} total_len: {total_len}, chunk_index {chunk_index} parameter set"
+        );
+        let start = chunk_size * chunk_index;
+
+        let sub_evaluations = SmartSlice::BorrowedMut(&mut self.z[start..][..chunk_size]);
+
+        DensePolynomial {
+            num_vars: self.num_vars - num_chunks.trailing_zeros() as usize,
+            len: chunk_size,
+            z: sub_evaluations,
+        }
+    }
+
     /// splits the MLE into `num_chunks` parts, where each part contains disjoint mutable pointers
     /// to the original data (either borrowed mutably or owned).
     pub fn as_view_chunks_mut(&'a mut self, num_chunks: usize) -> Vec<DensePolynomial<'a, F>> {

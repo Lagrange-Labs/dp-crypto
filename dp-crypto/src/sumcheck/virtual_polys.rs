@@ -194,6 +194,7 @@ impl<'a, F: PrimeField> VirtualPolynomialsBuilder<'a, F> {
     }
 }
 
+#[derive(Default, Clone)]
 pub struct VirtualPolynomials<'a, F: PrimeField> {
     pub num_threads: usize,
     polys: Vec<VirtualPolynomial<'a, F>>,
@@ -269,7 +270,7 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
                     if mle.num_vars() > log2_num_threads {
                         mle.as_view_chunks_mut(self.num_threads).into_iter()
                     } else {
-                        vec![mle.to_owned(); self.num_threads].into_iter()
+                        vec![mle.as_view_mut(); self.num_threads].into_iter()
                     }
                 }
             }

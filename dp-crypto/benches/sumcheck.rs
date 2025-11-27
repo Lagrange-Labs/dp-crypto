@@ -5,7 +5,7 @@ use ark_std::rand::thread_rng;
 use divan::Bencher;
 use dp_crypto::{
     arkyper::transcript::blake3::Blake3Transcript, poly::dense::DensePolynomial,
-    structs::IOPProverState, virtual_poly::VirtualPolynomial,
+    structs::IOPProverState,
 };
 use itertools::Itertools;
 
@@ -27,31 +27,58 @@ type T = Blake3Transcript;
 const NUM_VARIABLES: &[usize] = &[18, 20, 22, 24, 26];
 const DEGREES: &[usize] = &[2, 3];
 
-#[divan::bench_group(sample_count = 30)]
+const SAMPLE_COUNT: u32 = 30;
+
+#[divan::bench_group(sample_count = SAMPLE_COUNT)]
 mod sumchecks {
-    use std::rc::Rc;
+    use std::{
+        rc::Rc,
+        sync::atomic::{AtomicU16, Ordering},
+    };
 
     use ark_poly::{DenseMultilinearExtension, MultilinearExtension};
     use ark_sumcheck::ml_sumcheck::{MLSumcheck, protocol::ListOfProductsOfPolynomials};
+    use dp_crypto::{
+        monomial::Term, util::optimal_sumcheck_threads, virtual_polys::VirtualPolynomials,
+    };
+    use either::Either;
     use hyperplonk::SumCheck;
 
     use super::*;
 
     #[divan::bench(args = NUM_VARIABLES, consts = DEGREES)]
     fn dp_sumcheck<const NUM_DEGREE: usize>(b: Bencher, nv: usize) {
-        b.with_inputs(|| {
-            let fs = prepare_input::<NUM_DEGREE, _, _>(nv, |n| {
-                DensePolynomial::<F>::random(n, &mut thread_rng())
+        let num_threads = optimal_sumcheck_threads(nv);
+        // we need to sample the input polynomials here because we need to provide references to
+        // such polynomials to the benched function
+        const NUM_INPUTS: usize = 3;
+        let inputs: Vec<_> = (0..NUM_INPUTS)
+            .map(|_| {
+                prepare_input::<NUM_DEGREE, _, _>(nv, |n| {
+                    DensePolynomial::<F>::random(n, &mut thread_rng())
+                })
             })
-            .into_iter()
-            .map(Arc::new)
-            .collect_vec();
-            let virtual_poly_v1 = VirtualPolynomial::new_from_product(fs, F::ONE);
+            .collect();
+
+        let counter = AtomicU16::new(0);
+        b.with_inputs(|| {
+            let num_input = counter.fetch_add(1, Ordering::Relaxed) as usize;
+            let virtual_poly = VirtualPolynomials::new_from_monimials(
+                num_threads,
+                nv,
+                vec![Term {
+                    scalar: F::ONE,
+                    product: inputs[num_input % NUM_INPUTS]
+                        .iter()
+                        .map(Either::Left)
+                        .collect_vec(),
+                }],
+            );
             let transcript = T::new(b"dp_sumcheck");
-            (virtual_poly_v1, transcript)
+            (virtual_poly, transcript)
         })
         .bench_values(|(virtual_poly, mut transcript)| {
-            IOPProverState::prove_parallel(virtual_poly, &mut transcript);
+            IOPProverState::prove(virtual_poly, &mut transcript);
         });
     }
 
@@ -60,7 +87,7 @@ mod sumchecks {
     fn ceno_sumcheck<const NUM_DEGREE: usize>(b: Bencher, nv: usize) {
         use ff_ext::GoldilocksExt2;
         use multilinear_extensions::{
-            mle::MultilinearExtension, virtual_poly::VirtualPolynomial as CenoVirtualPolynomial,
+            mle::MultilinearExtension, virtual_polys::VirtualPolynomials as CenoVirtualPolynomial,
         };
         use p3::field::FieldAlgebra;
         use transcript::BasicTranscript;
@@ -68,20 +95,38 @@ mod sumchecks {
         type E = GoldilocksExt2;
         type T = BasicTranscript<E>;
 
-        b.with_inputs(|| {
-            let fs = prepare_input::<NUM_DEGREE, _, _>(nv, |n| {
-                MultilinearExtension::<E>::random(n, &mut thread_rng())
+        let num_threads = sumcheck::util::optimal_sumcheck_threads(nv);
+        // we need to sample the input polynomials here because we need to provide references to
+        // such polynomials to the benched function
+        const NUM_INPUTS: usize = 3;
+        let inputs: Vec<_> = (0..NUM_INPUTS)
+            .map(|_| {
+                prepare_input::<NUM_DEGREE, _, _>(nv, |n| {
+                    MultilinearExtension::<E>::random(n, &mut thread_rng())
+                })
             })
-            .into_iter()
-            .map(Arc::new)
-            .collect_vec();
-            let virtual_poly_v1 = CenoVirtualPolynomial::new_from_product(fs, E::ONE);
+            .collect();
+
+        let counter = AtomicU16::new(0);
+
+        b.with_inputs(|| {
+            let num_input = counter.fetch_add(1, Ordering::Relaxed) as usize;
+            let virtual_poly = CenoVirtualPolynomial::new_from_monimials(
+                num_threads,
+                nv,
+                vec![multilinear_extensions::monomial::Term {
+                    scalar: Either::Right(E::ONE),
+                    product: inputs[num_input % NUM_INPUTS]
+                        .iter()
+                        .map(Either::Left)
+                        .collect_vec(),
+                }],
+            );
             let transcript = T::new(b"ceno_sumcheck");
-            (virtual_poly_v1, transcript)
+            (virtual_poly, transcript)
         })
-        .bench_values(|(virtual_poly, mut transcript)| {
-            #[allow(deprecated)]
-            sumcheck::structs::IOPProverState::prove_parallel(virtual_poly, &mut transcript);
+        .bench_local_values(|(virtual_poly, mut transcript)| {
+            sumcheck::structs::IOPProverState::prove(virtual_poly, &mut transcript);
         });
     }
 
