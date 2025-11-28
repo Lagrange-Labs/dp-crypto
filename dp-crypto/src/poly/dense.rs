@@ -170,7 +170,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         it.for_each(|(a, b)| {
             *a += *r * (*b - *a);
         });
-
+        self.z.truncate_mut(n);
         self.num_vars -= 1;
         self.len = n;
     }
@@ -192,7 +192,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
                 *a += *r * m;
             }
         });
-
+        self.z.truncate_mut(n);
         self.num_vars -= 1;
         self.len = n;
     }
@@ -213,7 +213,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         it.filter(|&(&mut a, &b)| a != b).for_each(|(a, b)| {
             *a += *r * (*b - *a);
         });
-
+        self.z.truncate_mut(n);
         self.num_vars -= 1;
         self.len = n;
     }
@@ -248,6 +248,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         for i in 0..n {
             self.z[i] = self.z[2 * i] + *r * (self.z[2 * i + 1] - self.z[2 * i]);
         }
+        self.z.truncate_mut(n);
         self.num_vars -= 1;
         self.len = n;
     }
@@ -471,17 +472,17 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     }
 
     pub fn evals(&self) -> Vec<F> {
-        self.z.to_vec()
+        self.z[..self.len].to_vec()
     }
 
     pub fn evals_ref(&self) -> &[F] {
-        self.z.as_slice()
+        &self.z.as_slice()[..self.len]
     }
 
     pub fn eval_as_univariate(&self, r: &F) -> F {
         let mut output = self.z[0];
         let mut rpow = *r;
-        for z in self.z.iter().skip(1) {
+        for z in self.z.iter().take(self.len).skip(1) {
             output += rpow * z;
             rpow *= r;
         }

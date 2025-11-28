@@ -270,7 +270,7 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
                     if mle.num_vars() > log2_num_threads {
                         mle.as_view_chunks_mut(self.num_threads).into_iter()
                     } else {
-                        vec![mle.as_view_mut(); self.num_threads].into_iter()
+                        vec![mle.to_owned(); self.num_threads].into_iter() // cannot use as_view_mut since the resulting MLE cannot be cloned
                     }
                 }
             }

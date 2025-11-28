@@ -61,9 +61,12 @@ fn prev_power_of_two(n: usize) -> usize {
 
 /// Largest power of two that fits the available rayon threads
 pub fn max_usable_threads() -> usize {
-    if cfg!(test) {
+    #[cfg(not(feature = "parallel"))]
+    {
         1
-    } else {
+    }
+    #[cfg(feature = "parallel")]
+    {
         static MAX_USABLE_THREADS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
         *MAX_USABLE_THREADS.get_or_init(|| {
             let n = rayon::current_num_threads();
