@@ -348,7 +348,16 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
                     .as_ref()
                     .clone(),
             })
-            .map(|mle| mle.evaluate(&point[point.len() - mle.num_vars()..]))
+            .map(|mle| {
+                mle.evaluate(
+                    point[point.len() - mle.num_vars()..]
+                        .iter()
+                        .rev()
+                        .copied()
+                        .collect_vec()
+                        .as_slice(),
+                )
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
         // evaluate based on monimial expression
         Ok(self.polys[0]

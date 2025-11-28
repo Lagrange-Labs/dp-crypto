@@ -636,9 +636,12 @@ impl<'a, F: PrimeField> IOPProverState<'a, F> {
         self.poly
             .flattened_ml_extensions
             .par_iter_mut()
-            .for_each(|poly| {
+            .zip_eq(&self.poly_meta)
+            .for_each(|(poly, poly_type)| {
                 assert!(poly.num_vars() > 0);
-                if expected_numvars_at_round == poly.num_vars() {
+                if expected_numvars_at_round == poly.num_vars()
+                    && matches!(poly_type, PolyMeta::Normal)
+                {
                     if !poly.is_mut() {
                         *poly = Arc::new(poly.fix_low_parallel(r));
                     } else {

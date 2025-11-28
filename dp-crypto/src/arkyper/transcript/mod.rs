@@ -3,6 +3,8 @@ use std::borrow::Borrow;
 use ark_ec::AffineRepr;
 use ark_ff::{Field, PrimeField};
 use ark_serialize::CanonicalSerialize;
+
+use crate::poly::unsafe_allocate_zero_vec;
 pub mod blake3;
 
 /// Constant serialization of an infinity point.
@@ -14,8 +16,8 @@ pub trait Transcript {
     fn challenge_bytes(&mut self, out: &mut [u8]);
 
     fn append_scalars<F: PrimeField>(&mut self, scalars: &[impl Borrow<F>]) {
-        let mut buff = vec![0u8; F::MODULUS_BIT_SIZE as usize / 8];
         for scalar in scalars {
+            let mut buff = unsafe_allocate_zero_vec(F::MODULUS_BIT_SIZE as usize / 8);
             scalar
                 .borrow()
                 .serialize_compressed(&mut buff)
@@ -42,9 +44,10 @@ pub trait Transcript {
     }
 
     fn append_points<A: AffineRepr>(&mut self, points: &[impl Borrow<A>]) {
-        let mut buff =
-            vec![0u8; <A::BaseField as Field>::BasePrimeField::MODULUS_BIT_SIZE as usize / 8];
         for point in points {
+            let mut buff = unsafe_allocate_zero_vec(
+                <A::BaseField as Field>::BasePrimeField::MODULUS_BIT_SIZE as usize / 8,
+            );
             let aff = point.borrow();
             if aff.is_zero() {
                 // TODO: unclear how to handle this - jolt's doing 64 bytes but it's not if it's really useful
