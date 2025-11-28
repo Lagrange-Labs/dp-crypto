@@ -17,3 +17,18 @@ dp-crypto = { path = "dp-crypto" }
 ark-ff = { version = "0.5.0", features = ["std"] }
 ark-bn254 = { version = "0.5.0", features = ["std"]}
 sumcheck_macro = { path = "sumcheck_macro" }
+
+[patch.crates-io]
+#ark-ff = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+#ark-ec = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+#ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+#ark-poly = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-poly = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+allocative = { git = "https://github.com/facebookexperimental/allocative", rev = "85b773d85d526d068ce94724ff7a7b81203fc95e" }
+
+
