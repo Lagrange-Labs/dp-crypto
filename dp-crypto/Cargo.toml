@@ -45,6 +45,7 @@ parallel = [
     "ark-std/parallel",
 ]
 nightly-benches = ["parallel", "dep:sumcheck", "dep:multilinear_extensions", "dep:ff_ext", "dep:transcript", "dep:p3", "dep:expander-arith", "dep:expander-poly", "dep:expander-hasher", "dep:expander-sumcheck" ]
+all-stable = ["mono", "parallel"]
 mono = []
 
 [dev-dependencies]
