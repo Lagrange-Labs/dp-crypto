@@ -26,11 +26,11 @@ quote = "^1"
 divan = "^0.1"
 syn = { version = "^2", features = ["full"] }
 sumcheck_macro.workspace = true
-sumcheck = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
-multilinear_extensions = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
-ff_ext = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
-transcript = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
-p3 = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+sumcheck = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+multilinear_extensions = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+ff_ext = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+transcript = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+p3 = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
 expander-arith = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "arith", features = ["halo2_asm"], optional = true }
 expander-poly = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "polynomials", optional = true }
 expander-hasher = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "gkr_hashers", optional = true }

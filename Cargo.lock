@@ -1094,7 +1094,7 @@ dependencies = [
  "syn 2.0.111",
  "thiserror 2.0.17",
  "tracing",
- "transcript 0.1.0 (git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
+ "transcript 0.1.0 (git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
 ]
 
 [[package]]
@@ -1246,7 +1246,7 @@ dependencies = [
 [[package]]
 name = "ff_ext"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
 dependencies = [
  "once_cell",
  "p3",
@@ -2183,7 +2183,7 @@ dependencies = [
 [[package]]
 name = "multilinear_extensions"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
 dependencies = [
  "either",
  "ff_ext",
@@ -2429,7 +2429,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "p3"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
 dependencies = [
  "p3-baby-bear",
  "p3-challenger",
@@ -2795,7 +2795,7 @@ dependencies = [
 [[package]]
 name = "poseidon"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
 dependencies = [
  "criterion 0.5.1",
  "ff_ext",
@@ -3418,7 +3418,7 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sumcheck"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
 dependencies = [
  "either",
  "ff_ext",
@@ -3427,10 +3427,10 @@ dependencies = [
  "p3",
  "rayon",
  "serde",
- "sumcheck_macro 0.1.0 (git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
+ "sumcheck_macro 0.1.0 (git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
  "thiserror 1.0.69",
  "tracing",
- "transcript 0.1.0 (git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
+ "transcript 0.1.0 (git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
 ]
 
 [[package]]
@@ -3463,7 +3463,7 @@ dependencies = [
 [[package]]
 name = "sumcheck_macro"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
 dependencies = [
  "itertools 0.13.0",
  "p3",
@@ -3880,7 +3880,7 @@ dependencies = [
 [[package]]
 name = "transcript"
 version = "0.1.0"
-source = "git+ssh://git@github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
 dependencies = [
  "ff_ext",
  "itertools 0.13.0",
