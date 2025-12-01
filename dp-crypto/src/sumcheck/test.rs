@@ -156,15 +156,7 @@ fn test_sumcheck<F: PrimeField>(
     let mut transcript = T::new(b"test");
     let subclaim = IOPVerifierState::<F>::verify(asserted_sum, &proof, &poly_info, &mut transcript);
     ensure!(
-        poly.evaluate(
-            subclaim
-                .point
-                .iter()
-                .copied()
-                .rev()
-                .collect::<Vec<_>>()
-                .as_ref()
-        )? == subclaim.expected_evaluation,
+        poly.evaluate(&subclaim.point)? == subclaim.expected_evaluation,
         "wrong subclaim"
     );
     Ok(())
@@ -206,15 +198,7 @@ fn test_sumcheck_internal<F: PrimeField>(
     };
     let subclaim = IOPVerifierState::check_and_generate_subclaim(&verifier_state, &asserted_sum);
     assert!(
-        poly.evaluate(
-            subclaim
-                .point
-                .iter()
-                .copied()
-                .rev()
-                .collect::<Vec<_>>()
-                .as_ref()
-        )? == subclaim.expected_evaluation,
+        poly.evaluate(&subclaim.point)? == subclaim.expected_evaluation,
         "wrong subclaim"
     );
     Ok(())

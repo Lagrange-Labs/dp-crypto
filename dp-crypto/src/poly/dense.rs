@@ -323,9 +323,10 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
             r.len(),
             self.num_vars
         );
+        //let r = r_vec.as_slice();
         let m = r.len() / 2;
         let (r2, r1) = r.split_at(m);
-        let (eq_one, eq_two) = rayon::join(|| eq::evals(r2), || eq::evals(r1));
+        let (eq_one, eq_two) = rayon::join(|| eq::evals(r1), || eq::evals(r2));
         Ok(self.split_eq_evaluate(&eq_one, &eq_two))
     }
 
@@ -406,10 +407,10 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     fn inside_out_serial(&self, r: &[F]) -> F {
         // r is expected to be big endinan
         // r[0] is the most significant digit
-        let mut current = self.z.clone();
+        let mut current = self.z.to_vec();
         let m = r.len();
-        for i in (0..m).rev() {
-            let stride = 1 << i;
+        for i in 0..m {
+            let stride = 1 << (m - 1 - i);
 
             // Note that as r is big endian
             // and i is reversed
@@ -439,8 +440,8 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         // Invoking the same parallelisation structure
         // currently in evaluating in Lagrange bases.
         // See eq_poly::evals()
-        for i in (0..m).rev() {
-            let stride = 1 << i;
+        for i in 0..m {
+            let stride = 1 << (m - 1 - i);
             let r_val = r[m - 1 - i];
             let (evals_left, evals_right) = current.split_at_mut(stride);
             let (evals_right, _) = evals_right.split_at_mut(stride);
@@ -707,8 +708,8 @@ mod tests {
         let mut chis: Vec<F> = Vec::new();
         for i in 0..n {
             let mut chi_i = F::one();
-            for j in 0..r.len() {
-                let bit_j = (i & (1 << (r.len() - j - 1))) > 0;
+            for j in (0..r.len()).rev() {
+                let bit_j = (i & (1 << j)) > 0;
                 if bit_j {
                     chi_i *= r[j];
                 } else {
@@ -786,7 +787,13 @@ mod tests {
                     .collect();
 
                 let eval1 = poly.evaluate(&eval_point).unwrap();
-                let eval2 = poly.inside_out_evaluate(&eval_point);
+                let eval2 = poly.inside_out_evaluate(
+                    &eval_point, /*.iter()
+                                 .copied()
+                                 .rev()
+                                 .collect::<Vec<_>>()
+                                 .as_slice()*/
+                );
 
                 assert_eq!(
                     eval1, eval2,
@@ -813,23 +820,23 @@ mod tests {
 
         let eval = poly.evaluate(&random_point).unwrap();
         let fixed_poly = if parallel_fix {
-            poly.fix_low_parallel(&random_point[num_vars - 1])
+            poly.fix_low_parallel(&random_point[0])
         } else {
-            poly.fix_low(&random_point[num_vars - 1])
+            poly.fix_low(&random_point[0])
         };
 
-        let eval_fixed = fixed_poly.evaluate(&random_point[..num_vars - 1]).unwrap();
+        let eval_fixed = fixed_poly.evaluate(&random_point[1..]).unwrap();
 
         assert_eq!(eval, eval_fixed);
 
         // fix in place
         if parallel_fix {
-            poly.fix_low_mut_parallel(&random_point[num_vars - 1]);
+            poly.fix_low_mut_parallel(&random_point[0]);
         } else {
-            poly.fix_low_mut(&random_point[num_vars - 1]);
+            poly.fix_low_mut(&random_point[0]);
         }
 
-        let eval_fixed = poly.evaluate(&random_point[..num_vars - 1]).unwrap();
+        let eval_fixed = poly.evaluate(&random_point[1..]).unwrap();
 
         assert_eq!(eval, eval_fixed);
 
@@ -838,20 +845,20 @@ mod tests {
         let mut poly = DensePolynomial::<Fr>::random(num_vars, &mut rng);
         let eval = poly.evaluate(&random_point).unwrap();
         // there is no parallel version for fixing high variable yet
-        let fixed_poly = poly.new_fix_top(&random_point[0]);
+        let fixed_poly = poly.new_fix_top(&random_point[num_vars - 1]);
 
-        let eval_fixed = fixed_poly.evaluate(&random_point[1..]).unwrap();
+        let eval_fixed = fixed_poly.evaluate(&random_point[..num_vars - 1]).unwrap();
 
         assert_eq!(eval, eval_fixed);
 
         // fix in place
         if parallel_fix {
-            poly.par_fix_mut_top(&random_point[0]);
+            poly.par_fix_mut_top(&random_point[num_vars - 1]);
         } else {
-            poly.fix_high_mut(&random_point[0]);
+            poly.fix_high_mut(&random_point[num_vars - 1]);
         }
 
-        let eval_fixed = poly.evaluate(&random_point[1..]).unwrap();
+        let eval_fixed = poly.evaluate(&random_point[..num_vars - 1]).unwrap();
 
         assert_eq!(eval, eval_fixed);
     }
@@ -862,8 +869,8 @@ mod tests {
         let evals = (0..num_evals).map(Fr::from).collect();
         let poly = DensePolynomial::<Fr>::new(evals);
 
-        let eval_at_1 = poly.evaluate(&[Fr::ZERO, Fr::ONE]).unwrap();
-        let eval_at_2 = poly.evaluate(&[Fr::ONE, Fr::ZERO]).unwrap();
+        let eval_at_1 = poly.evaluate(&[Fr::ONE, Fr::ZERO]).unwrap();
+        let eval_at_2 = poly.evaluate(&[Fr::ZERO, Fr::ONE]).unwrap();
 
         assert_eq!(eval_at_1, Fr::from(1));
         assert_eq!(eval_at_2, Fr::from(2));

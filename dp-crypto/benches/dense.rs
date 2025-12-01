@@ -47,6 +47,16 @@ mod dense {
             })
     }
 
+    #[divan::bench(args = LENS)]
+    fn arkyper_dense_dot_prod_eval_static(b: Bencher, n: usize) {
+        b.with_inputs(|| arkworks_static_evals(2u32.pow(n as u32) as usize))
+            .bench_local_refs(|s| {
+                let r_len = s.len().ilog2();
+                let r = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+                DensePolynomial::new_from_smart_slice(SmartSlice::Borrowed(s)).evaluate_dot_product(&r)
+            })
+    }
+
     use jolt_core::poly::dense_mlpoly::DensePolynomial as JoltDense;
 
     #[divan::bench(args = LENS)]
