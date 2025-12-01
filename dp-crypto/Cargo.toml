@@ -13,18 +13,18 @@ anyhow = "^1.0"
 blake3 = "^1.8"
 tracing = "^0.1"
 rayon = "^1.11"
-ark-serialize = { version = "0.5.0", features = ["derive"] }
-ark-poly-commit = "0.5.0"
-rand_chacha = "0.3.1"
+ark-serialize = { version = "^0.5", features = ["derive"] }
+ark-poly-commit = "^0.5"
+rand_chacha = "^0.3"
 itertools.workspace = true
 serde = {version = "^1.0", features = ["derive", "rc"]}
 num-bigint = "0.4.6"
 either = { version = "1.15.0", features = ["serde"] }
-thiserror = "2.0.17"
-proc-macro2 = "1.0.103"
-quote = "1.0.42"
-divan = "0.1.21"
-syn = { version = "2.0.110", features = ["full"] }
+thiserror = "^2.0"
+proc-macro2 = "^1"
+quote = "^1"
+divan = "^0.1"
+syn = { version = "^2", features = ["full"] }
 sumcheck_macro.workspace = true
 sumcheck = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
 multilinear_extensions = { git = "ssh://git@github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
@@ -55,6 +55,7 @@ serde_json = "^1.0"
 ark-sumcheck = { git = "https://github.com/eigmax/sumcheck.git", features = ["std", "parallel"] }
 hyperplonk = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "subroutines" }
 hyper-arith = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "arithmetic" }
+jolt-core = { git = "https://github.com/a16z/jolt" }
 
 [[bench]]
 harness = false
@@ -71,3 +72,9 @@ harness = false
 [[bench]]
 name = "sumcheck"
 harness = false
+
+[[bench]]
+name = "pcs"
+harness = false
+
+
