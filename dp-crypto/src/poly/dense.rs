@@ -4,11 +4,13 @@
 use crate::poly::eq::EQ_PARALLEL_THRESHOLD;
 use anyhow::ensure;
 use ark_ff::Field;
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, RngCore};
 use core::ops::Index;
 use either::Either;
 use rayon::iter::IndexedParallelIterator;
 use rayon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     poly::{eq, field::mul_01_optimized, slice::SmartSlice, unsafe_allocate_zero_vec},
@@ -38,7 +40,11 @@ pub enum FixOrder {
 }
 
 // Field trait bound required for CanonicalSerialize and CanonicalDeserialize
-#[derive(Clone, Default, Debug, PartialEq)]
+#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: CanonicalSerialize",
+    deserialize = "F: CanonicalDeserialize"
+))]
 pub struct DensePolynomial<'a, F: Field> {
     pub num_vars: usize, // the number of variables in the multilinear polynomial
     pub len: usize,
@@ -693,7 +699,7 @@ pub(crate) const fn swap_bits(x: usize, a: usize, b: usize, n: usize) -> usize {
 mod tests {
     use crate::poly::{Math, challenge};
     use ark_ff::{AdditiveGroup, PrimeField};
-    use ark_std::rand::{Rng, SeedableRng};
+    use ark_std::rand::{Rng, SeedableRng, thread_rng};
     use rand_chacha::ChaCha20Rng;
     use rstest::rstest;
 
@@ -874,5 +880,38 @@ mod tests {
 
         assert_eq!(eval_at_1, Fr::from(1));
         assert_eq!(eval_at_2, Fr::from(2));
+    }
+
+    #[test]
+    fn test_poly_serialization() {
+        let num_vars = 5;
+        let poly = DensePolynomial::<Fr>::random(num_vars, &mut thread_rng());
+
+        let serialized_poly = rmp_serde::to_vec(&poly).unwrap();
+        let deserialized_poly: DensePolynomial<Fr> =
+            rmp_serde::from_slice(&serialized_poly).unwrap();
+
+        assert_eq!(poly, deserialized_poly);
+
+        // check with a non-owned poly
+        let mut evals: Vec<_> = (0..(1 << num_vars))
+            .map(|_| Fr::rand(&mut thread_rng()))
+            .collect();
+        let poly = DensePolynomial::<Fr>::new_from_smart_slice(SmartSlice::Borrowed(&evals));
+
+        let serialized_poly = rmp_serde::to_vec(&poly).unwrap();
+        let deserialized_poly: DensePolynomial<Fr> =
+            rmp_serde::from_slice(&serialized_poly).unwrap();
+
+        assert_eq!(poly, deserialized_poly);
+
+        // serialize polynomial with mutable reference
+        let poly = DensePolynomial::<Fr>::new_from_smart_slice(SmartSlice::BorrowedMut(&mut evals));
+
+        let serialized_poly = rmp_serde::to_vec(&poly).unwrap();
+        let deserialized_poly: DensePolynomial<Fr> =
+            rmp_serde::from_slice(&serialized_poly).unwrap();
+
+        assert_eq!(poly, deserialized_poly);
     }
 }

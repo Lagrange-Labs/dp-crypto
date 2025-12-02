@@ -58,6 +58,7 @@ ark-sumcheck = { git = "https://github.com/eigmax/sumcheck.git", features = ["st
 hyperplonk = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "subroutines" }
 hyper-arith = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "arithmetic" }
 jolt-core = { git = "https://github.com/a16z/jolt" }
+rmp-serde = "1.3.0"
 
 [[bench]]
 harness = false
