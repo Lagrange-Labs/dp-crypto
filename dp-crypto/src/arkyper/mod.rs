@@ -26,9 +26,9 @@ pub mod interface;
 pub mod msm;
 pub mod transcript;
 pub use interface::*;
-use transcript::Transcript;
 #[cfg(feature = "parallel")]
 use rayon::iter::IntoParallelRefMutIterator;
+use transcript::Transcript;
 
 // just a type needed to create the SRS
 #[allow(dead_code)]
@@ -335,7 +335,7 @@ impl<P: Pairing> HyperKZG<P> {
             let indices = (0..pi_len).collect::<Vec<usize>>();
             let coeffs = cfg_iter!(indices)
                 .map(|j| {
-                    point[ell - i - 1] * (previous_poly[2 * j + 1] - previous_poly[2 * j])
+                    point[i] * (previous_poly[2 * j + 1] - previous_poly[2 * j])
                         + previous_poly[2 * j]
                 })
                 .collect();
@@ -407,8 +407,8 @@ impl<P: Pairing> HyperKZG<P> {
         let two = P::ScalarField::from(2u64);
         for i in 0..ell {
             let left = two * r * y_list[i + 1];
-            let right = r * (P::ScalarField::one() - point[ell - i - 1]) * (ypos[i] + yneg[i])
-                + point[ell - i - 1] * (ypos[i] - yneg[i]);
+            let right = r * (P::ScalarField::one() - point[i]) * (ypos[i] + yneg[i])
+                + point[i] * (ypos[i] - yneg[i]);
             ensure!(left == right);
             // Note that we don't make any checks about Y[0] here, but our batching
             // check below requires it
@@ -543,7 +543,7 @@ mod tests {
 
             // verify the evaluation
             let mut verifier_tr = Blake3Transcript::new(b"TestEval");
-            assert!(HyperKZG::verify(&vk, &comm, &point, &eval, &proof, &mut verifier_tr,).is_ok());
+            HyperKZG::verify(&vk, &comm, &point, &eval, &proof, &mut verifier_tr).unwrap();
 
             // Change the proof and expect verification to fail
             let mut bad_proof = proof.clone();

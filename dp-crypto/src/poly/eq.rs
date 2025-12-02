@@ -55,7 +55,7 @@ pub fn evals_serial<F: Field>(r: &[F], scaling_factor: Option<F>) -> Vec<F> {
     let mut evals: Vec<F> = vec![scaling_factor.unwrap_or(F::one()); r.len().pow2()];
     let mut size = 1;
     #[allow(clippy::needless_range_loop)]
-    for j in 0..r.len() {
+    for j in (0..r.len()).rev() {
         // in each iteration, we double the size of chis
         size *= 2;
         for i in (0..size).rev().step_by(2) {
@@ -71,28 +71,29 @@ pub fn evals_serial<F: Field>(r: &[F], scaling_factor: Option<F>) -> Vec<F> {
 /// Computes the table of coefficients like `evals_serial`, but also caches the intermediate results.
 ///
 /// Returns a vector of vectors, where the `j`th vector contains the coefficients for the polynomial
-/// `eq(r[..j], x)` for all `x in {0, 1}^{j}`.
+/// `eq(r[r.len()-j..r.len()], x)` for all `x in {0, 1}^{j}`.
 ///
 /// Performance seems at most 10% worse than `evals_serial`
 #[inline]
 pub fn evals_serial_cached<F: Field>(r: &[F], scaling_factor: Option<F>) -> Vec<Vec<F>> {
     let mut evals: Vec<Vec<F>> = (0..r.len() + 1)
-        .map(|i| vec![scaling_factor.unwrap_or(F::one()); 1 << i])
+        .rev()
+        .map(|i| vec![scaling_factor.unwrap_or(F::one()); 1 << (r.len() - i)])
         .collect();
     let mut size = 1;
-    for j in 0..r.len() {
+    for j in (0..r.len()).rev() {
         size *= 2;
         for i in (0..size).rev().step_by(2) {
-            let scalar = evals[j][i / 2];
-            evals[j + 1][i] = scalar * r[j];
-            evals[j + 1][i - 1] = scalar - evals[j + 1][i];
+            let eval_index = r.len() - 1 - j;
+            let scalar = evals[eval_index][i / 2];
+            evals[eval_index + 1][i] = scalar * r[j];
+            evals[eval_index + 1][i - 1] = scalar - evals[eval_index + 1][i];
         }
     }
     evals
 }
 /// evals_serial_cached but for "high to low" ordering, used specifically in the Gruen x Dao Thaler optimization.
 pub fn evals_serial_cached_rev<F: Field>(r: &[F], scaling_factor: Option<F>) -> Vec<Vec<F>> {
-    let rev_r = r.iter().rev().collect::<Vec<_>>();
     let mut evals: Vec<Vec<F>> = (0..r.len() + 1)
         .map(|i| vec![scaling_factor.unwrap_or(F::one()); 1 << i])
         .collect();
@@ -101,7 +102,7 @@ pub fn evals_serial_cached_rev<F: Field>(r: &[F], scaling_factor: Option<F>) -> 
         for i in 0..size {
             let scalar = evals[j][i];
             let multiple = 1 << j;
-            evals[j + 1][i + multiple] = scalar * *rev_r[j];
+            evals[j + 1][i + multiple] = scalar * r[j];
             evals[j + 1][i] = scalar - evals[j + 1][i + multiple];
         }
         size *= 2;
@@ -122,7 +123,7 @@ pub fn evals_parallel<F: Field>(r: &[F], scaling_factor: Option<F>) -> Vec<F> {
     let mut size = 1;
     evals[0] = scaling_factor.unwrap_or(F::one());
 
-    for r in r.iter().rev() {
+    for r in r.iter() {
         let (evals_left, evals_right) = evals.split_at_mut(size);
         let (evals_right, _) = evals_right.split_at_mut(size);
 
@@ -181,6 +182,17 @@ mod tests {
             );
             assert_eq!(evals_serial, evals_parallel);
             assert_eq!(evals_serial, *evals_serial_cached.last().unwrap());
+            // check endianness of returned `evals`
+            let eval_at_1 = r
+                .iter()
+                .skip(1)
+                .fold(r[0], |prod, el| prod * (Fr::ONE - el));
+            let eval_at_2 = r
+                .iter()
+                .skip(2)
+                .fold((Fr::ONE - r[0]) * r[1], |prod, el| prod * (Fr::ONE - el));
+            assert_eq!(evals_serial[1], eval_at_1);
+            assert_eq!(evals_serial[2], eval_at_2);
         }
     }
 
@@ -195,9 +207,17 @@ mod tests {
                 .collect::<Vec<_>>();
             let evals_serial_cached = evals_serial_cached(&r, None);
             for i in 0..len {
-                println!("i = {} -> r[..i] = {:?}", i, &r[..i]);
-                let evals = evals(&r[..i]);
+                let point_slice = &r[r.len() - i..r.len()];
+                println!("i = {} -> r[..i] = {:?}", i, point_slice);
+                let evals = evals(point_slice);
                 assert_eq!(evals_serial_cached[i], evals);
+            }
+            let evals_serial_rev = evals_cached_rev(&r);
+            for i in 0..len {
+                let point_slice = &r[..i];
+                println!("i = {} -> r[..i] = {:?}", i, point_slice);
+                let evals = evals(point_slice);
+                assert_eq!(evals_serial_rev[i], evals);
             }
         }
     }

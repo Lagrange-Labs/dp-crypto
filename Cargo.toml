@@ -1,37 +1,34 @@
-[package]
-name = "dp-crypto"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-ark-bn254 = { version = "0.5.0", features = ["std"]}
-ark-std = { version = "0.5.0", features = ["std","getrandom"]}
-ark-ec = { version = "0.5.0", features = ["std"]}
-ark-ff = { version = "0.5.0", features = ["std"] }
-ark-poly = { version = "0.5.0", features = ["std"]}
-anyhow = "^1.0"
-blake3 = "^1.8"
-tracing = "^0.1"
-rayon = "^1.11"
-ark-serialize = { version = "0.5.0", features = ["derive"] }
-ark-poly-commit = "0.5.0"
-rand_chacha = "0.3.1"
-serde = { version = "^1.0", features = ["derive"] }
-divan = "0.1.21"
-
-[features]
-default = ["mono"]
-parallel = [
-    "ark-ec/parallel",
-    "ark-ff/parallel",
-    "ark-poly/parallel",
-    "ark-std/parallel",
+[workspace]
+members = [
+  "dp-crypto",
+  "sumcheck_macro",
 ]
-mono = []
+resolver = "3"
 
-[dev-dependencies]
-serde_json = "^1.0"
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+readme = "README.md"
 
-[[bench]]
-name = "dense"
-harness = false
+[workspace.dependencies]
+itertools = "0.14.0"
+ark-std = { version = "0.5.0", features = ["std","getrandom"]}
+dp-crypto = { path = "dp-crypto" }
+ark-ff = { version = "0.5.0", features = ["std"] }
+ark-bn254 = { version = "0.5.0", features = ["std"]}
+sumcheck_macro = { path = "sumcheck_macro" }
+
+[patch.crates-io]
+#ark-ff = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+#ark-ec = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+#ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+#ark-poly = { git = "https://github.com/a16z/arkworks-algebra", rev = "5ebdb178" }
+
+ark-bn254 = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ff = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-ec = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-serialize = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+ark-poly = { git = "https://github.com/a16z/arkworks-algebra", branch = "dev/twist-shout" }
+allocative = { git = "https://github.com/facebookexperimental/allocative", rev = "85b773d85d526d068ce94724ff7a7b81203fc95e" }
+
+

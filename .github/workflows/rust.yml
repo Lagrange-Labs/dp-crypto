@@ -32,9 +32,9 @@ jobs:
           ${{ runner.os }}-cargo-
     - name: Build (default features)
       run: cargo build --verbose
-    - name: Build (all features)
-      run: cargo build --verbose --all-features
-    - name: Run tests (all features)
-      run: cargo test --verbose --all-features
-    - name: Run clippy (all features)
-      run: cargo clippy --all-features -- -D warnings
+    - name: Build (all stable features)
+      run: cargo build --verbose --features=all-stable
+    - name: Run tests (all stable features)
+      run: cargo test --verbose --features=all-stable
+    - name: Run clippy (all stable features)
+      run: cargo clippy --features=all-stable -- -D warnings

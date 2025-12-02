@@ -1,0 +1,81 @@
+[package]
+name = "dp-crypto"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+ark-bn254.workspace = true
+ark-std.workspace = true
+ark-ec = { version = "0.5.0", features = ["std"]}
+ark-ff.workspace = true
+ark-poly = { version = "0.5.0", features = ["std"]}
+anyhow = "^1.0"
+blake3 = "^1.8"
+tracing = "^0.1"
+rayon = "^1.11"
+ark-serialize = { version = "^0.5", features = ["derive"] }
+ark-poly-commit = "^0.5"
+rand_chacha = "^0.3"
+itertools.workspace = true
+serde = {version = "^1.0", features = ["derive", "rc"]}
+num-bigint = "0.4.6"
+either = { version = "1.15.0", features = ["serde"] }
+thiserror = "^2.0"
+proc-macro2 = "^1"
+quote = "^1"
+divan = "^0.1"
+syn = { version = "^2", features = ["full"] }
+sumcheck_macro.workspace = true
+sumcheck = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+multilinear_extensions = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+ff_ext = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+transcript = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+p3 = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+expander-arith = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "arith", features = ["halo2_asm"], optional = true }
+expander-poly = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "polynomials", optional = true }
+expander-hasher = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "gkr_hashers", optional = true }
+expander-sumcheck = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "sumcheck_generic", optional = true }
+
+[features]
+default = ["mono"]
+parallel = [
+    "ark-ec/parallel",
+    "ark-ff/parallel",
+    "ark-poly/parallel",
+    "ark-std/parallel",
+]
+nightly-benches = ["parallel", "dep:sumcheck", "dep:multilinear_extensions", "dep:ff_ext", "dep:transcript", "dep:p3", "dep:expander-arith", "dep:expander-poly", "dep:expander-hasher", "dep:expander-sumcheck" ]
+all-stable = ["mono", "parallel"]
+mono = []
+
+[dev-dependencies]
+criterion = { version = "0.7.0", features = ["html_reports"]}
+env_logger = "0.11.8"
+rstest = "0.26.1"
+serde_json = "^1.0"
+ark-sumcheck = { git = "https://github.com/eigmax/sumcheck.git", features = ["std", "parallel"] }
+hyperplonk = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "subroutines" }
+hyper-arith = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "arithmetic" }
+jolt-core = { git = "https://github.com/a16z/jolt" }
+
+[[bench]]
+harness = false
+name = "devirgo_sumcheck"
+
+[[bench]]
+harness = false
+name = "eq"
+
+[[bench]]
+name = "dense"
+harness = false
+
+[[bench]]
+name = "sumcheck"
+harness = false
+
+[[bench]]
+name = "pcs"
+harness = false
+
+

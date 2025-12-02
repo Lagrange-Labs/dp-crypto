@@ -15,7 +15,7 @@ pub fn poly_msm<'a, A: AffineRepr>(
     Ok(r.remove(0))
 }
 
-pub fn batch_poly_msm<'a,A: AffineRepr>(
+pub fn batch_poly_msm<'a, A: AffineRepr>(
     g1_powers: &[A],
     polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
 ) -> anyhow::Result<Vec<A::Group>> {
