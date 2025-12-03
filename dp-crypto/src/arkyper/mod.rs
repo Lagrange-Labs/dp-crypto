@@ -8,6 +8,7 @@
 //! This means that Spartan's polynomial IOP can use commit to its polynomials as-is without incurring any interpolations or FFTs.
 //! (2) HyperKZG is specialized to use KZG as the univariate commitment scheme, so it includes several optimizations (both during the transformation of multilinear-to-univariate claims
 //! and within the KZG commitment scheme implementation itself).
+use crate::arkyper::transcript::AppendToTranscript;
 use crate::poly::dense::DensePolynomial;
 use anyhow::{bail, ensure};
 use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
@@ -505,6 +506,12 @@ impl<P: Pairing> CommitmentScheme for HyperKZG<P> {
 
     fn protocol_name() -> &'static [u8] {
         b"arkyper-kzg"
+    }
+}
+
+impl<P: Pairing> AppendToTranscript for HyperKZGCommitment<P> {
+    fn append_to_transcript<ProofTranscript: Transcript>(&self, transcript: &mut ProofTranscript) {
+        transcript.append_points::<P::G1Affine>(&[&self.0]);
     }
 }
 

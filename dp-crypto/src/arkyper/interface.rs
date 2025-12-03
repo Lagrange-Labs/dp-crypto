@@ -2,7 +2,10 @@ use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, RngCore};
 use std::{borrow::Borrow, fmt::Debug};
 
-use crate::{arkyper::Transcript, poly::dense::DensePolynomial};
+use crate::{
+    arkyper::{Transcript, transcript::AppendToTranscript},
+    poly::dense::DensePolynomial,
+};
 
 pub trait CommitmentScheme: Clone + Sync + Send + 'static {
     type Field: ark_ff::Field + Sized;
@@ -15,6 +18,7 @@ pub trait CommitmentScheme: Clone + Sync + Send + 'static {
         + PartialEq
         + CanonicalSerialize
         + CanonicalDeserialize
+        + AppendToTranscript
         + Clone;
     type Proof: Sync + Send + CanonicalSerialize + CanonicalDeserialize + Clone + Debug;
     type BatchedProof: Sync + Send + CanonicalSerialize + CanonicalDeserialize;
