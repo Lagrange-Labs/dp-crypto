@@ -21,6 +21,8 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
+use serde::Deserialize;
+use serde::Serialize;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
 pub mod interface;
@@ -76,8 +78,9 @@ impl<P: Pairing> HyperKZGSRS<P> {
     }
 }
 
-#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperKZGProverKey<P: Pairing> {
+    #[serde(with = "crate::serialization")]
     pub kzg_pk: Powers<'static, P>,
 }
 
@@ -87,13 +90,14 @@ impl<P: Pairing> HyperKZGProverKey<P> {
     }
 }
 
-#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperKZGVerifierKey<P: Pairing> {
+    #[serde(with = "crate::serialization")]
     pub kzg_vk: VerifierKey<P>,
 }
 
-#[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct HyperKZGCommitment<P: Pairing>(pub P::G1Affine);
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HyperKZGCommitment<P: Pairing>(#[serde(with = "crate::serialization")] pub P::G1Affine);
 
 impl<P: Pairing> Default for HyperKZGCommitment<P> {
     fn default() -> Self {
@@ -101,10 +105,13 @@ impl<P: Pairing> Default for HyperKZGCommitment<P> {
     }
 }
 
-#[derive(Clone, CanonicalSerialize, CanonicalDeserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct HyperKZGProof<P: Pairing> {
+    #[serde(with = "crate::serialization")]
     pub coms: Vec<P::G1Affine>,
+    #[serde(with = "crate::serialization")]
     pub w: Vec<P::G1Affine>,
+    #[serde(with = "crate::serialization")]
     pub v: Vec<Vec<P::ScalarField>>,
 }
 
