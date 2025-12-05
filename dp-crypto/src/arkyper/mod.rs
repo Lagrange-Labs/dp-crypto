@@ -527,7 +527,9 @@ mod tests {
     use super::*;
     use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
     use ark_bn254::{Bn254, Fr};
-    use ark_std::{UniformRand, rand::SeedableRng};
+    use ark_ff::{AdditiveGroup, Field};
+    use ark_std::{UniformRand, rand::{SeedableRng, thread_rng}};
+    use itertools::Itertools;
 
     #[test]
     fn test_hyperkzg_large() {
@@ -569,5 +571,73 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn test_batch_open() -> anyhow::Result<()> {
+        const NUM_VARS: &[usize] = &[12, 14, 16];
+
+        let num_polys = NUM_VARS.len();
+        let max_num_vars = *NUM_VARS.iter().max().unwrap();
+
+        let rng = &mut thread_rng();
+
+        // generate polynomials
+        let polys = NUM_VARS.iter().map(|num_vars| 
+            DensePolynomial::random(*num_vars, rng)
+        ).collect_vec();
+
+        let (pp, vp) = HyperKZG::<Bn254>::test_setup(rng, max_num_vars);
+
+        let commitments = HyperKZG::batch_commit(&pp, &polys)?
+            .into_iter().map(|(commitment, _)| commitment).collect_vec();
+
+        let opening_point = (0..max_num_vars)
+                .map(|_| challenge::random_challenge::<Fr, _>(rng))
+                .collect_vec();
+        
+        let evals = polys.iter().map(|poly| 
+                poly.evaluate(&opening_point[..poly.num_vars()])
+            ).collect::<anyhow::Result<Vec<_>>>()?;
+        let coefficients = (0..num_polys)
+                .map(|_| challenge::random_challenge::<Fr, _>(rng))
+                .collect_vec();
+        
+        let rlc_poly = DensePolynomial::linear_combination(
+            polys.iter().collect_vec().as_slice(), 
+            &coefficients
+        );
+        let mut transcript = Blake3Transcript::new(b"batch_open");
+
+        let proof = HyperKZG::prove(
+            &pp, &rlc_poly, &opening_point, None, &mut transcript
+        )?;
+
+        let comm = HyperKZG::combine_commitments(
+            &commitments, 
+            &coefficients,
+        )?;
+
+        let eval = evals.into_iter().zip(coefficients).enumerate()
+            .fold(Fr::ZERO, |eval, (i, (ev, coeff))| {
+                let factor = (NUM_VARS[i]..max_num_vars).fold(Fr::ONE, 
+                        |factor, var_index|
+                        factor * (Fr::ONE - opening_point[var_index])
+                    );
+                eval + ev*coeff*factor
+            });
+        
+        assert_eq!(eval, rlc_poly.evaluate(&opening_point)?);
+
+        let mut transcript = Blake3Transcript::new(b"batch_open");
+        
+        HyperKZG::verify(
+            &vp, 
+            &comm, 
+            &opening_point, 
+            &eval, 
+            &proof, 
+            &mut transcript
+        )
     }
 }

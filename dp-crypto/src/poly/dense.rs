@@ -651,6 +651,17 @@ where
     }
 }
 
+pub trait IntoMLE<T>: Sized {
+    /// Converts this type into the (usually inferred) input type.
+    fn into_mle(self) -> T;
+}
+
+impl<'a, F: Field> IntoMLE<DensePolynomial<'a, F>> for Vec<F> {
+    fn into_mle(self) -> DensePolynomial<'a, F> {
+        DensePolynomial::new(self)
+    }
+}
+
 #[tracing::instrument(skip_all)]
 pub fn compute_dotproduct<F: Field>(a: &[F], b: &[F]) -> F {
     #[cfg(not(feature = "parallel"))]
