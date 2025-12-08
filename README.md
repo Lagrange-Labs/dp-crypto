@@ -47,7 +47,7 @@ let virtual_poly = VirtualPolynomials::new_from_monomials(
     nv,
     vec![Term {
         scalar: F::ONE,
-        product: poly.
+        product: poly
             .iter()
             .map(Either::Left)
             .collect_vec(),
