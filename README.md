@@ -27,7 +27,7 @@ let poly = DensePolynomial::new_from_smart_slice(SmartSlice::Borrowed(evals.as_s
 let comm = HyperKZG::<Bn254>::commit(&pp, &poly);
 let point = (0..n).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
 let transcript = Blake3Transcript::new(b"hyperkzg_test");
-let proof = HyperKZG::<Bn254>::open(&pk, &poly,&point,%Fr::ZERO, &mut transcript)
+let proof = HyperKZG::<Bn254>::open(&pk, &poly, &point, &Fr::ZERO, &mut transcript);
 ```
 
 ## Sumcheck
