@@ -21,7 +21,7 @@ This library currently exposes [Hyperkzg](https://github.com/microsoft/Nova/blob
 
 ```rust
 let n = 4;
-let evals = 0..2u32.pow(n as u32).map(|i| Fr::from(i)).collect::<Vec<_>>();
+let evals = (0..2u32.pow(n as u32)).map(|i| Fr::from(i)).collect::<Vec<_>>();
 let (pk,vk) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n);
 let poly = DensePolynomial::new_from_smart_slice(SmartSlice::Borrowed(evals.as_slice()));
 let comm = HyperKZG::<Bn254>::commit(&pp, &poly);
