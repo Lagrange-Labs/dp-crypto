@@ -95,7 +95,7 @@ mod open {
             let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
             let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n);
             let poly = ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals));
-            let r_len = poly.num_vars;
+            let r_len = poly.num_vars();
             let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
             let transcript = Blake3Transcript::new(b"hyperkzg_test");
             (pp, poly, point, transcript)

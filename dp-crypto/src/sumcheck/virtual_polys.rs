@@ -196,7 +196,7 @@ impl<'a, F: PrimeField> VirtualPolynomialsBuilder<'a, F> {
 #[derive(Default, Clone)]
 pub struct VirtualPolynomials<'a, F: PrimeField> {
     pub num_threads: usize,
-    polys: Vec<VirtualPolynomial<'a, F>>,
+    pub(crate) polys: Vec<VirtualPolynomial<'a, F>>,
     pub(crate) poly_meta: BTreeMap<usize, PolyMeta>,
 }
 
@@ -256,7 +256,6 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
             } else {
                 PolyMeta::Phase2Only
             };
-            //ToDo: use views here
             let mles = match mle {
                 Either::Left(mle) => {
                     if mle.num_vars() > log2_num_threads {
@@ -374,6 +373,7 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
         num_multiplicands_range: (usize, usize),
         num_products: usize,
         rng: &mut R,
+        pad_polys: bool,
     ) -> (MonomialTermsMLE<F, DensePolynomial<'a, F>>, F) {
         let start = entered_span!("sample random virtual polynomial");
 
@@ -382,13 +382,23 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
         let mut monimial_term = vec![];
         for nv in nv {
             for _ in 0..num_products {
+                let pad_polys = if pad_polys { rng.gen_bool(0.7) } else { false };
                 let num_multiplicands =
                     rng.gen_range(num_multiplicands_range.0..num_multiplicands_range.1);
-                let (product, product_sum) = random_mle_list(*nv, num_multiplicands, rng);
+                let (mut product, product_sum) = random_mle_list(*nv, num_multiplicands, rng);
+                if pad_polys {
+                    product
+                        .iter_mut()
+                        .for_each(|prod| prod.pad_num_vars(max_num_variables));
+                }
                 let scalar = F::rand(&mut *rng);
                 monimial_term.push(Term { scalar, product });
-                // need to scale up for the smaller nv
-                sum += F::from(1 << (max_num_variables - nv)) * product_sum * scalar;
+                let mut term_sum = product_sum * scalar;
+                if !pad_polys {
+                    // need to scale up for the smaller nv
+                    term_sum *= F::from(1 << (max_num_variables - nv));
+                }
+                sum += term_sum;
             }
         }
         exit_span!(start);

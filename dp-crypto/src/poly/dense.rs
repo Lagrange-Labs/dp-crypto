@@ -46,20 +46,42 @@ pub enum FixOrder {
     deserialize = "F: CanonicalDeserialize"
 ))]
 pub struct DensePolynomial<'a, F: Field> {
-    pub num_vars: usize, // the number of variables in the multilinear polynomial
-    pub len: usize,
-    pub z: SmartSlice<'a, F>,
+    num_vars: usize, // the number of variables in the multilinear polynomial
+    len: usize,
+    z: SmartSlice<'a, F>,
+    padded_num_vars: Option<usize>,
 }
 
 macro_rules! split_eval_chunks {
-    ($chunk_fn:ident, $smart_variant:ident, $smart_slice: expr, $chunk_size:expr, $num_vars:expr) => {{
+    ($chunk_fn:ident, $smart_variant:ident, $smart_slice: expr, $chunk_size:expr, $num_vars:expr, $num_chunks:expr) => {{
         $smart_slice
             .$chunk_fn($chunk_size)
-            .map(|chunk| DensePolynomial {
-                z: SmartSlice::$smart_variant(chunk),
-                len: $chunk_size,
-                num_vars: $num_vars,
+            .map(|chunk| {
+                let chunk_len = chunk.len();
+                if chunk_len == $chunk_size {
+                    DensePolynomial {
+                        z: SmartSlice::$smart_variant(chunk),
+                        len: chunk_len,
+                        num_vars: $num_vars,
+                        padded_num_vars: None,
+                    }
+                } else {
+                    let num_actual_vars = ceil_log2(chunk.len());
+                    DensePolynomial {
+                        z: SmartSlice::$smart_variant(chunk),
+                        len: chunk_len,
+                        num_vars: num_actual_vars,
+                        padded_num_vars: Some($num_vars),
+                    }
+                }
             })
+            .chain(std::iter::repeat(DensePolynomial {
+                z: SmartSlice::Owned(vec![F::ZERO]),
+                len: 1,
+                num_vars: 0,
+                padded_num_vars: Some($num_vars),
+            }))
+            .take($num_chunks)
             .collect::<Vec<_>>()
     }};
 }
@@ -78,7 +100,12 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
             num_vars: z.len().ilog2() as usize,
             len: z.len(),
             z,
+            padded_num_vars: None,
         }
+    }
+
+    pub fn pad_num_vars(&mut self, num_vars: usize) {
+        self.padded_num_vars = Some(num_vars);
     }
 
     pub fn new_padded(evals: Vec<F>) -> Self {
@@ -92,11 +119,23 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     }
 
     pub fn num_vars(&self) -> usize {
-        self.num_vars
+        self.padded_num_vars.unwrap_or(self.num_vars)
     }
 
     pub fn len(&self) -> usize {
+        self.padded_num_vars.map(|nv| 1 << nv).unwrap_or(self.len)
+    }
+
+    pub fn unpadded_len(&self) -> usize {
         self.len
+    }
+
+    pub(crate) fn unpadded_num_vars(&self) -> usize {
+        self.num_vars
+    }
+
+    pub fn is_padded(&self) -> bool {
+        self.padded_num_vars.is_some()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -116,6 +155,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
             z: SmartSlice::Owned(self.z.to_vec()),
             num_vars: self.num_vars,
             len: self.len,
+            padded_num_vars: self.padded_num_vars,
         }
     }
 
@@ -134,6 +174,10 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     /// This function turns `P(x_1,...,x_a,...,x_{a+k - 1},...,x_b,...,x_{b+k - 1},...,x_n)`
     /// to `P(x_1,...,x_b,...,x_{b+k - 1},...,x_a,...,x_{a+k - 1},...,x_n)`
     pub fn relabel_in_place(&mut self, mut a: usize, mut b: usize, k: usize) {
+        assert!(
+            !self.is_padded(),
+            "This method is unsupported for padded polynomials"
+        );
         // enforce order of a and b
         if a > b {
             ark_std::mem::swap(&mut a, &mut b);
@@ -166,6 +210,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     }
 
     pub fn fix_high_mut(&mut self, r: &F) {
+        assert!(!self.is_padded());
         let n = self.len() / 2;
         let (left, right) = self.z.to_mut().split_at_mut(n);
 
@@ -182,6 +227,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     }
 
     pub fn fix_high_many_ones_top(&mut self, r: &F) {
+        assert!(!self.is_padded());
         let n = self.len() / 2;
         let (left, right) = self.z.to_mut().split_at_mut(n);
 
@@ -207,6 +253,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     /// high P(eval = 0).
     #[tracing::instrument(skip_all)]
     pub fn par_fix_mut_top(&mut self, r: &F) {
+        assert!(!self.is_padded());
         let n = self.len() / 2;
 
         let (left, right) = self.z.to_mut().split_at_mut(n);
@@ -226,6 +273,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
 
     #[tracing::instrument(skip_all)]
     pub fn new_fix_top(&self, r: &F) -> Self {
+        assert!(!self.is_padded());
         let n = self.len() / 2;
         let mut new_evals: Vec<F> = unsafe_allocate_zero_vec(n);
 
@@ -244,40 +292,62 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
             num_vars,
             len,
             z: SmartSlice::Owned(new_evals),
+            padded_num_vars: None,
         }
     }
 
     /// Note: does not truncate
     #[tracing::instrument(skip_all)]
     pub fn fix_low_mut(&mut self, r: &F) {
-        let n = self.len() / 2;
-        for i in 0..n {
-            self.z[i] = self.z[2 * i] + *r * (self.z[2 * i + 1] - self.z[2 * i]);
+        let len = self.unpadded_len();
+        if len == 1 {
+            self.z[0] *= F::ONE - r
+        } else {
+            let n = len / 2;
+            for i in 0..n {
+                self.z[i] = self.z[2 * i] + *r * (self.z[2 * i + 1] - self.z[2 * i]);
+            }
+            self.z.truncate_mut(n);
+            self.num_vars -= 1;
+            self.len = n;
         }
-        self.z.truncate_mut(n);
-        self.num_vars -= 1;
-        self.len = n;
+
+        if let Some(nv) = self.padded_num_vars.as_mut() {
+            *nv -= 1
+        }
     }
 
     pub fn fix_low(&self, r: &F) -> Self {
-        let n = self.len() / 2;
-        let mut new_evals = unsafe_allocate_zero_vec(n);
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..n {
-            let low = self.z[2 * i];
-            let high = self.z[2 * i + 1];
-            let m = high - low;
-            new_evals[i] = low + *r * m;
-        }
-        Self {
-            num_vars: self.num_vars - 1,
-            len: n,
-            z: SmartSlice::Owned(new_evals),
+        let len = self.unpadded_len();
+        if len == 1 {
+            let new_evals = vec![self.z[0] * (F::ONE - r)];
+            Self {
+                num_vars: self.num_vars,
+                len,
+                z: SmartSlice::Owned(new_evals),
+                padded_num_vars: self.padded_num_vars.map(|nv| nv - 1),
+            }
+        } else {
+            let n = len / 2;
+            let mut new_evals = unsafe_allocate_zero_vec(n);
+            #[allow(clippy::needless_range_loop)]
+            for i in 0..n {
+                let low = self.z[2 * i];
+                let high = self.z[2 * i + 1];
+                let m = high - low;
+                new_evals[i] = low + *r * m;
+            }
+            Self {
+                num_vars: self.num_vars - 1,
+                len: n,
+                z: SmartSlice::Owned(new_evals),
+                padded_num_vars: self.padded_num_vars.map(|nv| nv - 1),
+            }
         }
     }
 
     fn bound_poly_var_bot_01_optimized(&self, r: &F) -> Vec<F> {
-        let n = self.len() / 2;
+        let n = self.unpadded_len() / 2;
         let mut bound_z: Vec<F> = unsafe_allocate_zero_vec(n);
         unsafe { bound_z.set_len(0) };
         (bound_z.spare_capacity_mut(), self.z.par_chunks_exact(2))
@@ -298,19 +368,39 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     }
 
     pub fn fix_low_parallel(&self, r: &F) -> Self {
-        let evals = self.bound_poly_var_bot_01_optimized(r);
-        Self {
-            num_vars: self.num_vars - 1,
-            len: evals.len(),
-            z: SmartSlice::Owned(evals),
+        let len = self.unpadded_len();
+        if len == 1 {
+            let new_evals = vec![self.z[0] * (F::ONE - r)];
+            Self {
+                num_vars: self.num_vars,
+                len,
+                z: SmartSlice::Owned(new_evals),
+                padded_num_vars: self.padded_num_vars.map(|nv| nv - 1),
+            }
+        } else {
+            let evals = self.bound_poly_var_bot_01_optimized(r);
+            Self {
+                num_vars: self.num_vars - 1,
+                len: evals.len(),
+                z: SmartSlice::Owned(evals),
+                padded_num_vars: self.padded_num_vars.map(|nv| nv - 1),
+            }
         }
     }
 
     pub fn fix_low_mut_parallel(&mut self, r: &F) {
-        let evals = self.bound_poly_var_bot_01_optimized(r);
-        self.num_vars -= 1;
-        self.len = evals.len();
-        self.z = SmartSlice::Owned(evals);
+        let len = self.unpadded_len();
+        if len == 1 {
+            self.z[0] *= F::ONE - r;
+        } else {
+            let evals = self.bound_poly_var_bot_01_optimized(r);
+            self.num_vars -= 1;
+            self.len = evals.len();
+            self.z = SmartSlice::Owned(evals);
+        }
+        if let Some(nv) = self.padded_num_vars.as_mut() {
+            *nv -= 1
+        }
     }
 
     pub fn evaluate_dot_product(&self, r: &[F]) -> F {
@@ -324,16 +414,20 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     // returns Z(r) in O(n) time
     pub fn evaluate(&self, r: &[F]) -> anyhow::Result<F> {
         ensure!(
-            r.len() == self.num_vars,
+            r.len() == self.num_vars(),
             "r len() = {} vs num_vars = {}",
             r.len(),
-            self.num_vars
+            self.num_vars()
         );
+        // portion of the point dealing with real number of variables
+        let (r_real, r_padded) = r.split_at(self.num_vars);
         //let r = r_vec.as_slice();
-        let m = r.len() / 2;
-        let (r2, r1) = r.split_at(m);
+        let m = r_real.len() / 2;
+        let (r2, r1) = r_real.split_at(m);
         let (eq_one, eq_two) = rayon::join(|| eq::evals(r1), || eq::evals(r2));
-        Ok(self.split_eq_evaluate(&eq_one, &eq_two))
+        let eval = self.split_eq_evaluate(&eq_one, &eq_two);
+        // add padding coordinates to `eval`
+        Ok(r_padded.iter().fold(eval, |acc, r| acc * (F::ONE - r)))
     }
 
     pub fn split_eq_evaluate(&self, eq_one: &[F], eq_two: &[F]) -> F {
@@ -387,6 +481,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     // https://randomwalks.xyz/publish/fast_polynomial_evaluation.html
     // Shaves a factor of 2 from run time.
     pub fn inside_out_evaluate(&self, r: &[F]) -> F {
+        assert!(!self.is_padded());
         // Copied over from eq_poly
         // If the number of variables are greater
         // than 2^16 -- use parallel evaluate
@@ -479,10 +574,17 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     }
 
     pub fn evals(&self) -> Vec<F> {
-        self.z[..self.len].to_vec()
+        let padded_len = self.len();
+        let mut evals = self.z[..self.len].to_vec();
+        evals.append(&mut vec![F::ZERO; padded_len - self.len]);
+        evals
     }
 
     pub fn evals_ref(&self) -> &[F] {
+        assert!(
+            !self.is_padded(),
+            "Cannot return evals as slice if the MLE is padded, use evals_iter instead"
+        );
         &self.z.as_slice()[..self.len]
     }
 
@@ -521,12 +623,34 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         );
         let start = chunk_size * chunk_index;
 
-        let sub_evaluations = SmartSlice::Borrowed(&self.z[start..][..chunk_size]);
-
-        DensePolynomial {
-            num_vars: self.num_vars - num_chunks.trailing_zeros() as usize,
-            len: chunk_size,
-            z: sub_evaluations,
+        if start < self.unpadded_len() {
+            let end = self.unpadded_len().min(start + chunk_size);
+            let sub_evaluations = SmartSlice::Borrowed(&self.z[start..end]);
+            let num_vars = ceil_log2(end - start);
+            if sub_evaluations.len() < chunk_size {
+                // there is part of the 0-padding in the chunk
+                DensePolynomial {
+                    num_vars,
+                    len: sub_evaluations.len(),
+                    z: sub_evaluations,
+                    padded_num_vars: Some(ceil_log2(chunk_size)),
+                }
+            } else {
+                DensePolynomial {
+                    num_vars,
+                    len: chunk_size,
+                    z: sub_evaluations,
+                    padded_num_vars: None,
+                }
+            }
+        } else {
+            // the chunk is entirely in 0-padded area
+            DensePolynomial {
+                num_vars: 0,
+                len: 1,
+                z: SmartSlice::Owned(vec![F::ZERO]),
+                padded_num_vars: Some(ceil_log2(chunk_size)),
+            }
         }
     }
 
@@ -551,12 +675,34 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         );
         let start = chunk_size * chunk_index;
 
-        let sub_evaluations = SmartSlice::BorrowedMut(&mut self.z[start..][..chunk_size]);
-
-        DensePolynomial {
-            num_vars: self.num_vars - num_chunks.trailing_zeros() as usize,
-            len: chunk_size,
-            z: sub_evaluations,
+        if start < self.unpadded_len() {
+            let end = self.unpadded_len().min(start + chunk_size);
+            let sub_evaluations = SmartSlice::BorrowedMut(&mut self.z[start..end]);
+            let num_vars = ceil_log2(end - start);
+            if sub_evaluations.len() < chunk_size {
+                // there is part of the 0-padding in the chunk
+                DensePolynomial {
+                    num_vars,
+                    len: sub_evaluations.len(),
+                    z: sub_evaluations,
+                    padded_num_vars: Some(ceil_log2(chunk_size)),
+                }
+            } else {
+                DensePolynomial {
+                    num_vars,
+                    len: chunk_size,
+                    z: sub_evaluations,
+                    padded_num_vars: None,
+                }
+            }
+        } else {
+            // the chunk is entirely in 0-padded area
+            DensePolynomial {
+                num_vars: 0,
+                len: 1,
+                z: SmartSlice::Owned(vec![F::ZERO]),
+                padded_num_vars: Some(ceil_log2(chunk_size)),
+            }
         }
     }
 
@@ -572,13 +718,15 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         // safety check that `chunk_size` is a power of 2;
         // it should always hold since `total_len` is power of 2 and `num_chunks` is a divisor of `total_len`
         debug_assert!(chunk_size.is_power_of_two());
-        let num_vars_per_chunk = self.num_vars - ceil_log2(num_chunks);
+        let num_vars_per_chunk = self.num_vars() - ceil_log2(num_chunks);
+
         split_eval_chunks!(
             chunks_mut,
             BorrowedMut,
             &mut self.z,
             chunk_size,
-            num_vars_per_chunk
+            num_vars_per_chunk,
+            num_chunks
         )
     }
 
@@ -596,9 +744,16 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         // safety check that `chunk_size` is a power of 2;
         // it should always hold since `total_len` is power of 2 and `num_chunks` is a divisor of `total_len`
         debug_assert!(chunk_size.is_power_of_two());
-        let num_vars_per_chunk = self.num_vars - ceil_log2(num_chunks);
+        let num_vars_per_chunk = self.num_vars() - ceil_log2(num_chunks);
 
-        split_eval_chunks!(chunks, Borrowed, self.z, chunk_size, num_vars_per_chunk)
+        split_eval_chunks!(
+            chunks,
+            Borrowed,
+            self.z,
+            chunk_size,
+            num_vars_per_chunk,
+            num_chunks
+        )
     }
 
     #[tracing::instrument(skip_all)]
@@ -711,6 +866,7 @@ mod tests {
     use crate::poly::{Math, challenge};
     use ark_ff::{AdditiveGroup, PrimeField};
     use ark_std::rand::{Rng, SeedableRng, thread_rng};
+    use itertools::Itertools;
     use rand_chacha::ChaCha20Rng;
     use rstest::rstest;
 
@@ -924,5 +1080,62 @@ mod tests {
             rmp_serde::from_slice(&serialized_poly).unwrap();
 
         assert_eq!(poly, deserialized_poly);
+    }
+
+    #[test]
+    fn test_padded_polys() {
+        let nv = 4;
+        let padded_nv = 10;
+        let mut poly = DensePolynomial::random(nv, &mut thread_rng());
+
+        let mut poly_view = poly.as_view();
+        poly_view.pad_num_vars(padded_nv);
+        let point = (0..padded_nv)
+            .map(|_| Fr::rand(&mut thread_rng()))
+            .collect_vec();
+
+        let poly_eval = poly.evaluate(&point[..nv]).unwrap();
+
+        let padded_poly_eval = poly_view.evaluate(&point).unwrap();
+
+        let expected_eval = (nv..padded_nv).fold(poly_eval, |eval, i| eval * (Fr::ONE - point[i]));
+
+        assert_eq!(padded_poly_eval, expected_eval);
+
+        // test fixing
+        let padded_poly_eval = point
+            .iter()
+            .fold(poly_view.clone(), |fixed_poly, p| {
+                fixed_poly.fix_low_parallel(p)
+            })
+            .evals()[0];
+
+        assert_eq!(padded_poly_eval, expected_eval);
+
+        let padded_poly_eval = point
+            .iter()
+            .fold(poly_view.clone(), |fixed_poly, p| fixed_poly.fix_low(p))
+            .evals()[0];
+
+        assert_eq!(padded_poly_eval, expected_eval);
+
+        let padded_poly_eval = {
+            point.iter().for_each(|p| poly_view.fix_low_mut_parallel(p));
+            poly_view.evals()[0]
+        };
+
+        assert_eq!(padded_poly_eval, expected_eval);
+
+        let mut poly_view = poly.as_view_mut();
+        poly_view.pad_num_vars(padded_nv);
+
+        let padded_poly_eval = {
+            point.iter().for_each(|p| poly_view.fix_low_mut(p));
+            poly_view.evals()[0]
+        };
+
+        assert_eq!(padded_poly_eval, expected_eval);
+
+        assert_eq!(poly.evals()[0], expected_eval);
     }
 }
