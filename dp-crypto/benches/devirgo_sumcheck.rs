@@ -193,12 +193,12 @@ fn generate_inputs<'a, F: PrimeField>(
     let rng = &mut thread_rng();
     for nv in max_nv - 4..max_nv {
         for _ in 0..num_products {
-            let (mut product, product_sum) = random_mle_list(nv, NUM_DEGREE, rng);
+            let (mut product, _) = random_mle_list(nv, NUM_DEGREE, rng);
             match pad_polys {
                 Padding::NoPad => (),
                 Padding::Optimized => product
                     .iter_mut()
-                    .for_each(|prod| prod.pad_num_vars(max_nv)),
+                    .for_each(|prod| prod.zero_pad_num_vars(max_nv).unwrap()),
                 Padding::Dummy => {
                     product = product
                         .into_iter()
@@ -216,11 +216,6 @@ fn generate_inputs<'a, F: PrimeField>(
             }
             let scalar = F::rand(rng);
             monimial_term.push(Term { scalar, product });
-            let mut term_sum = product_sum * scalar;
-            if let Padding::NoPad = pad_polys {
-                // need to scale up for the smaller nv
-                term_sum *= F::from(1 << (max_nv - nv));
-            }
         }
     }
     monimial_term

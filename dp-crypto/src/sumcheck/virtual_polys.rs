@@ -382,6 +382,11 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
         let mut monimial_term = vec![];
         for nv in nv {
             for _ in 0..num_products {
+                // if `pad_polys` is true, we need to 0-pad some of the polynomials
+                // to `max_num_variables`, but not necessarily all of them.
+                // Therefore, if `pad_polys` is true, we sample at random whether to
+                // pad the polynomials in the current product; otherwise, we don't pad
+                // any polynomial
                 let pad_polys = if pad_polys { rng.gen_bool(0.7) } else { false };
                 let num_multiplicands =
                     rng.gen_range(num_multiplicands_range.0..num_multiplicands_range.1);
@@ -389,7 +394,7 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
                 if pad_polys {
                     product
                         .iter_mut()
-                        .for_each(|prod| prod.pad_num_vars(max_num_variables));
+                        .for_each(|prod| prod.zero_pad_num_vars(max_num_variables).unwrap());
                 }
                 let scalar = F::rand(&mut *rng);
                 monimial_term.push(Term { scalar, product });
