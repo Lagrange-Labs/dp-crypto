@@ -116,7 +116,7 @@ fn devirgo_sumcheck_fn(c: &mut Criterion) {
                         let mut prover_transcript = T::new(b"test");
                         let (_, fs) = { prepare_input(nv) };
 
-                        let virtual_poly_v2 = VirtualPolynomials::new_from_monimials(
+                        let virtual_poly_v2 = VirtualPolynomials::new_from_monomials(
                             threads,
                             nv,
                             vec![Term {
@@ -145,7 +145,7 @@ fn devirgo_sumcheck_fn(c: &mut Criterion) {
                         let mut prover_transcript = T::new(b"test");
                         let (_, mut fs) = { prepare_input(nv) };
 
-                        let virtual_poly_v2 = VirtualPolynomials::new_from_monimials(
+                        let virtual_poly_v2 = VirtualPolynomials::new_from_monomials(
                             threads,
                             nv,
                             vec![Term {

@@ -213,7 +213,7 @@ impl<'a, F: PrimeField> VirtualPolynomials<'a, F> {
         }
     }
 
-    pub fn new_from_monimials(
+    pub fn new_from_monomials(
         num_threads: usize,
         max_num_variables: usize,
         monomials: MonomialTermsType<F, EitherRefMLE<'a, DensePolynomial<'a, F>>>,

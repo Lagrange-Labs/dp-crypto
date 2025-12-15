@@ -99,7 +99,7 @@ fn test_sumcheck_with_different_degree_helper<F: PrimeField>(
         &mut rng,
     );
 
-    let poly = VirtualPolynomials::<F>::new_from_monimials(
+    let poly = VirtualPolynomials::<F>::new_from_monomials(
         num_threads,
         max_num_variables,
         monimials

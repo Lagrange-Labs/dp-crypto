@@ -63,7 +63,7 @@ mod sumchecks {
         let counter = AtomicU16::new(0);
         b.with_inputs(|| {
             let num_input = counter.fetch_add(1, Ordering::Relaxed) as usize;
-            let virtual_poly = VirtualPolynomials::new_from_monimials(
+            let virtual_poly = VirtualPolynomials::new_from_monomials(
                 num_threads,
                 nv,
                 vec![Term {
