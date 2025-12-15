@@ -5,7 +5,6 @@ use crate::{
     sumcheck::{
         Expression, WitnessId,
         expression::monomial::Term,
-        macros::{entered_span, exit_span},
         random_mle_list,
         util::{ceil_log2, log2_strict},
         utils::eval_by_expr_with_instance,
