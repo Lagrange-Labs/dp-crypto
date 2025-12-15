@@ -64,7 +64,7 @@ The sumcheck implementation is ported from [the Scroll repository](https://githu
 
 ## Licensing
 
-dp-private is licensed under a Lagrange specific license, see [LICENSE](https://github.com/Lagrange-Labs/dp-crypto/blob/main/LICENSE) file.
+dp-crypto is licensed under a Lagrange specific license, see [LICENSE](https://github.com/Lagrange-Labs/dp-crypto/blob/main/LICENSE) file.
 
 ## Disclaimer
 
