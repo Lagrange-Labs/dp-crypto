@@ -253,7 +253,7 @@ fn different_size_polys_sumcheck(c: &mut Criterion) {
                             })
                             .collect_vec();
                         let virtual_poly_v2 =
-                            VirtualPolynomials::new_from_monimials(threads, max_nv, monomials);
+                            VirtualPolynomials::new_from_monomials(threads, max_nv, monomials);
                         let instant = std::time::Instant::now();
                         let (_sumcheck_proof_v2, _) =
                             IOPProverState::<F>::prove(virtual_poly_v2, &mut prover_transcript);
@@ -282,7 +282,7 @@ fn different_size_polys_sumcheck(c: &mut Criterion) {
                             })
                             .collect_vec();
                         let virtual_poly_v2 =
-                            VirtualPolynomials::new_from_monimials(threads, max_nv, monomials);
+                            VirtualPolynomials::new_from_monomials(threads, max_nv, monomials);
                         let instant = std::time::Instant::now();
                         let (_sumcheck_proof_v2, _) =
                             IOPProverState::<F>::prove(virtual_poly_v2, &mut prover_transcript);
@@ -314,7 +314,7 @@ fn different_size_polys_sumcheck(c: &mut Criterion) {
                             })
                             .collect_vec();
                         let virtual_poly_v2 =
-                            VirtualPolynomials::new_from_monimials(threads, max_nv, monomials);
+                            VirtualPolynomials::new_from_monomials(threads, max_nv, monomials);
                         let instant = std::time::Instant::now();
                         let (_sumcheck_proof_v2, _) =
                             IOPProverState::<F>::prove(virtual_poly_v2, &mut prover_transcript);
