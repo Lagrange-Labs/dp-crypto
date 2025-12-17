@@ -8,7 +8,6 @@ use ark_ff::{Field, PrimeField};
 use ark_std::rand::Rng;
 pub use expression::{utils::monomialize_expr_to_wit_terms, *};
 
-
 use crate::poly::dense::DensePolynomial;
 #[macro_use]
 pub mod macros;

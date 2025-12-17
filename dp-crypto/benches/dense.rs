@@ -1,10 +1,7 @@
 use ark_bn254::Fr;
 use ark_poly::{Polynomial, evaluations::multivariate::DenseMultilinearExtension};
 use divan::Bencher;
-use dp_crypto::poly::{
-    dense::{DensePolynomial, FixOrder},
-    slice::SmartSlice,
-};
+use dp_crypto::poly::{dense::DensePolynomial, slice::SmartSlice};
 
 fn main() {
     // Run registered benchmarks.
@@ -119,9 +116,7 @@ mod fixing {
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::LowToHigh);
-            }
+            poly.fix_low_variables_in_place_parallel(point);
         })
     }
 
@@ -137,9 +132,7 @@ mod fixing {
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::LowToHigh);
-            }
+            poly.fix_low_variables_in_place_parallel(point);
         })
     }
     #[divan::bench(args = LENS)]
@@ -160,9 +153,7 @@ mod fixing {
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::LowToHigh);
-            }
+            poly.fix_low_variables_in_place_parallel(point);
         })
     }
 
@@ -177,9 +168,7 @@ mod fixing {
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::HighToLow);
-            }
+            poly.fix_high_variables_in_place_parallel(point);
         })
     }
 
@@ -195,9 +184,7 @@ mod fixing {
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::HighToLow);
-            }
+            poly.fix_high_variables_in_place_parallel(point);
         })
     }
 
@@ -219,9 +206,7 @@ mod fixing {
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::HighToLow);
-            }
+            poly.fix_high_variables_in_place_parallel(point);
         })
     }
 }

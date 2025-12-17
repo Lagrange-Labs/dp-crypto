@@ -206,6 +206,81 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         }
     }
 
+    fn fix_variables_in_place<'b>(
+        &mut self,
+        vars: impl Iterator<Item = &'b F>,
+        order: FixOrder,
+        parallel: bool,
+    ) {
+        vars.for_each(|r| {
+            if parallel {
+                self.par_fix_mut(r, order)
+            } else {
+                self.fix_mut(r, order)
+            }
+        })
+    }
+
+    pub fn fix_high_variables_in_place(&mut self, vars: &[F]) {
+        self.fix_variables_in_place(vars.iter().rev(), FixOrder::HighToLow, false)
+    }
+
+    pub fn fix_high_variables_in_place_parallel(&mut self, vars: &[F]) {
+        self.fix_variables_in_place(vars.iter().rev(), FixOrder::HighToLow, true)
+    }
+
+    pub fn fix_low_variables_in_place(&mut self, vars: &[F]) {
+        self.fix_variables_in_place(vars.iter(), FixOrder::LowToHigh, false);
+    }
+
+    pub fn fix_low_variables_in_place_parallel(&mut self, vars: &[F]) {
+        self.fix_variables_in_place(vars.iter(), FixOrder::LowToHigh, true);
+    }
+
+    pub fn fix_high_variables(&self, vars: &[F]) -> Self {
+        if vars.is_empty() {
+            return self.clone();
+        }
+        // fix the first high variable
+        let mut fixed_poly = self.new_fix_top(&vars[vars.len() - 1]);
+        // then iterate over the remaining variables using the mutable variant
+        fixed_poly.fix_high_variables_in_place(&vars[..vars.len() - 1]);
+        fixed_poly
+    }
+
+    pub fn fix_high_variables_parallel(&self, vars: &[F]) -> Self {
+        if vars.is_empty() {
+            return self.clone();
+        }
+        // fix the first high variable
+        let mut fixed_poly = self.new_fix_top(&vars[vars.len() - 1]);
+        // then iterate over the remaining variables using the mutable variant
+        fixed_poly.fix_high_variables_in_place_parallel(&vars[..vars.len() - 1]);
+        fixed_poly
+    }
+
+    pub fn fix_low_variables(&self, vars: &[F]) -> Self {
+        if vars.is_empty() {
+            return self.clone();
+        }
+        // fix the first high variable
+        let mut fixed_poly = self.fix_low(&vars[0]);
+        // then iterate over the remaining variables using the mutable variant
+        fixed_poly.fix_low_variables_in_place(&vars[1..]);
+        fixed_poly
+    }
+
+    pub fn fix_low_variables_parallel(&self, vars: &[F]) -> Self {
+        if vars.is_empty() {
+            return self.clone();
+        }
+        // fix the first high variable
+        let mut fixed_poly = self.fix_low_parallel(&vars[0]);
+        // then iterate over the remaining variables using the mutable variant
+        fixed_poly.fix_low_variables_in_place_parallel(&vars[1..]);
+        fixed_poly
+    }
+
     pub fn fix_mut(&mut self, r: &F, order: FixOrder) {
         match order {
             FixOrder::LowToHigh => self.fix_low_mut(r),
@@ -213,10 +288,10 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         }
     }
 
-    pub fn par_fix_mut(&mut self, r: F, order: FixOrder) {
+    pub fn par_fix_mut(&mut self, r: &F, order: FixOrder) {
         match order {
-            FixOrder::LowToHigh => self.fix_low_mut_parallel(&r),
-            FixOrder::HighToLow => self.par_fix_mut_top(&r),
+            FixOrder::LowToHigh => self.fix_low_mut_parallel(r),
+            FixOrder::HighToLow => self.par_fix_mut_top(r),
         }
     }
 
@@ -1071,24 +1146,25 @@ mod tests {
             .collect();
 
         let eval = poly.evaluate(&random_point).unwrap();
+        let fixed_vars = num_vars / 2;
         let fixed_poly = if parallel_fix {
-            poly.fix_low_parallel(&random_point[0])
+            poly.fix_low_variables_parallel(&random_point[0..fixed_vars])
         } else {
-            poly.fix_low(&random_point[0])
+            poly.fix_low_variables(&random_point[0..fixed_vars])
         };
 
-        let eval_fixed = fixed_poly.evaluate(&random_point[1..]).unwrap();
+        let eval_fixed = fixed_poly.evaluate(&random_point[fixed_vars..]).unwrap();
 
         assert_eq!(eval, eval_fixed);
 
         // fix in place
         if parallel_fix {
-            poly.fix_low_mut_parallel(&random_point[0]);
+            poly.fix_low_variables_in_place_parallel(&random_point[0..fixed_vars]);
         } else {
-            poly.fix_low_mut(&random_point[0]);
+            poly.fix_low_variables_in_place(&random_point[0..fixed_vars]);
         }
 
-        let eval_fixed = poly.evaluate(&random_point[1..]).unwrap();
+        let eval_fixed = poly.evaluate(&random_point[fixed_vars..]).unwrap();
 
         assert_eq!(eval, eval_fixed);
 
@@ -1096,21 +1172,24 @@ mod tests {
 
         let mut poly = DensePolynomial::<Fr>::random(num_vars, &mut rng);
         let eval = poly.evaluate(&random_point).unwrap();
-        // there is no parallel version for fixing high variable yet
-        let fixed_poly = poly.new_fix_top(&random_point[num_vars - 1]);
+        let fixed_poly = if parallel_fix {
+            poly.fix_high_variables_parallel(&random_point[fixed_vars..])
+        } else {
+            poly.fix_high_variables(&random_point[fixed_vars..])
+        };
 
-        let eval_fixed = fixed_poly.evaluate(&random_point[..num_vars - 1]).unwrap();
+        let eval_fixed = fixed_poly.evaluate(&random_point[..fixed_vars]).unwrap();
 
         assert_eq!(eval, eval_fixed);
 
         // fix in place
         if parallel_fix {
-            poly.par_fix_mut_top(&random_point[num_vars - 1]);
+            poly.fix_high_variables_in_place_parallel(&random_point[fixed_vars..]);
         } else {
-            poly.fix_high_mut(&random_point[num_vars - 1]);
+            poly.fix_high_variables_in_place(&random_point[fixed_vars..]);
         }
 
-        let eval_fixed = poly.evaluate(&random_point[..num_vars - 1]).unwrap();
+        let eval_fixed = poly.evaluate(&random_point[..fixed_vars]).unwrap();
 
         assert_eq!(eval, eval_fixed);
     }
