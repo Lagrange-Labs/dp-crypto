@@ -1,12 +1,17 @@
 use std::borrow::Borrow;
 
-use ark_ec::{AffineRepr, CurveGroup, scalar_mul::variable_base::VariableBaseMSM};
+use ark_ec::{scalar_mul::variable_base::VariableBaseMSM, AffineRepr, CurveGroup};
 use ark_ff::PrimeField;
 use ark_std::cfg_iter;
 #[cfg(feature = "parallel")]
 use rayon::prelude::*;
 
 use crate::poly::dense::DensePolynomial;
+
+use ark_bn254::{Fr as Bn254Fr, G1Affine as Bn254G1Affine, G1Projective as Bn254G1Projective};
+
+// Generic implementations (fallback for all curves)
+
 pub fn poly_msm<'a, A: AffineRepr>(
     g1_powers: &[A],
     poly: &impl Borrow<DensePolynomial<'a, A::ScalarField>>,
@@ -42,4 +47,279 @@ pub fn msm<G: CurveGroup<ScalarField = F>, F: PrimeField>(
     let r = <G as VariableBaseMSM>::msm(g_powers, coeffs)
         .map_err(|e| anyhow::anyhow!("MSM error: {e}"))?;
     Ok(r)
+}
+
+// BN254 specialized implementations using blitzar when feature is enabled
+
+#[cfg(feature = "blitzar-msm")]
+pub fn poly_msm_bn254<'a>(
+    g1_powers: &[Bn254G1Affine],
+    poly: &impl Borrow<DensePolynomial<'a, Bn254Fr>>,
+) -> anyhow::Result<Bn254G1Projective> {
+    use crate::arkyper::blitzar_msm;
+    use ark_ec::CurveGroup;
+
+    let result = blitzar_msm::bn254_poly_msm(g1_powers, poly)?;
+    Ok(result.into_group())
+}
+
+#[cfg(not(feature = "blitzar-msm"))]
+pub fn poly_msm_bn254<'a>(
+    g1_powers: &[Bn254G1Affine],
+    poly: &impl Borrow<DensePolynomial<'a, Bn254Fr>>,
+) -> anyhow::Result<Bn254G1Projective> {
+    poly_msm(g1_powers, poly)
+}
+
+#[cfg(feature = "blitzar-msm")]
+pub fn batch_poly_msm_bn254<'a>(
+    g1_powers: &[Bn254G1Affine],
+    polys: &[impl Borrow<DensePolynomial<'a, Bn254Fr>>],
+) -> anyhow::Result<Vec<Bn254G1Projective>> {
+    use crate::arkyper::blitzar_msm;
+    use ark_ec::CurveGroup;
+
+    let results = blitzar_msm::bn254_batch_poly_msm(g1_powers, polys)?;
+    Ok(results.into_iter().map(|r| r.into_group()).collect())
+}
+
+#[cfg(not(feature = "blitzar-msm"))]
+pub fn batch_poly_msm_bn254<'a>(
+    g1_powers: &[Bn254G1Affine],
+    polys: &[impl Borrow<DensePolynomial<'a, Bn254Fr>>],
+) -> anyhow::Result<Vec<Bn254G1Projective>> {
+    batch_poly_msm(g1_powers, polys)
+}
+
+#[cfg(feature = "blitzar-msm")]
+pub fn msm_bn254(
+    g_powers: &[Bn254G1Affine],
+    coeffs: &[Bn254Fr],
+) -> anyhow::Result<Bn254G1Projective> {
+    use crate::arkyper::blitzar_msm;
+    use ark_ec::CurveGroup;
+
+    let result = blitzar_msm::bn254_blitzar_msm(g_powers, coeffs)?;
+    Ok(result.into_group())
+}
+
+#[cfg(not(feature = "blitzar-msm"))]
+pub fn msm_bn254(
+    g_powers: &[Bn254G1Affine],
+    coeffs: &[Bn254Fr],
+) -> anyhow::Result<Bn254G1Projective> {
+    msm(g_powers, coeffs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ark_bn254::{Fr, G1Affine};
+    use ark_std::rand::thread_rng;
+    use ark_std::UniformRand;
+
+    #[test]
+    fn test_bn254_specialized_msm() {
+        let mut rng = thread_rng();
+        let n = 100;
+
+        let points: Vec<G1Affine> = (0..n).map(|_| G1Affine::rand(&mut rng)).collect();
+        let scalars: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+
+        // Test specialized version
+        let result_specialized = msm_bn254(&points, &scalars).unwrap();
+
+        // Test generic version
+        let result_generic: Bn254G1Projective = msm(&points, &scalars).unwrap();
+
+        assert_eq!(result_specialized, result_generic);
+    }
+
+    #[test]
+    fn test_bn254_specialized_poly_msm() {
+        let mut rng = thread_rng();
+        let n = 4;
+        let size = 1 << n;
+
+        let points: Vec<G1Affine> = (0..size).map(|_| G1Affine::rand(&mut rng)).collect();
+        let coeffs: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+        let poly = DensePolynomial::new(coeffs.clone());
+
+        // Test specialized version
+        let result_specialized = poly_msm_bn254(&points, &poly).unwrap();
+
+        // Test generic version
+        let result_generic: Bn254G1Projective = poly_msm(&points, &poly).unwrap();
+
+        assert_eq!(result_specialized, result_generic);
+    }
+
+    #[test]
+    fn test_bn254_specialized_batch_poly_msm() {
+        let mut rng = thread_rng();
+        let n = 4;
+        let size = 1 << n;
+        let batch_size = 3;
+
+        let points: Vec<G1Affine> = (0..size).map(|_| G1Affine::rand(&mut rng)).collect();
+        let polys: Vec<DensePolynomial<Fr>> = (0..batch_size)
+            .map(|_| {
+                let coeffs: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+                DensePolynomial::new(coeffs)
+            })
+            .collect();
+
+        // Test specialized version
+        let results_specialized = batch_poly_msm_bn254(&points, &polys).unwrap();
+
+        // Test generic version
+        let results_generic: Vec<Bn254G1Projective> = batch_poly_msm(&points, &polys).unwrap();
+
+        assert_eq!(results_specialized.len(), results_generic.len());
+        for (s, g) in results_specialized.iter().zip(results_generic.iter()) {
+            assert_eq!(s, g);
+        }
+    }
+}
+
+#[cfg(all(test, feature = "blitzar-msm"))]
+mod blitzar_comparison_tests {
+    use super::*;
+    use crate::arkyper::blitzar_msm;
+    use ark_bn254::{Fr, G1Affine};
+    use ark_ec::CurveGroup;
+    use ark_std::rand::thread_rng;
+    use ark_std::UniformRand;
+    use pretty_assertions::assert_eq;
+
+    #[test]
+    fn test_blitzar_vs_arkworks_msm() {
+        let mut rng = thread_rng();
+        let n = 100;
+
+        let points: Vec<G1Affine> = (0..n).map(|_| G1Affine::rand(&mut rng)).collect();
+        let scalars: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+
+        // Compute using arkworks (generic implementation)
+        let arkworks_result: Bn254G1Projective = msm(&points, &scalars).unwrap();
+
+        // Compute using blitzar
+        let blitzar_result_affine = blitzar_msm::bn254_blitzar_msm(&points, &scalars).unwrap();
+        let blitzar_result = blitzar_result_affine.into_group();
+
+        assert_eq!(
+            arkworks_result, blitzar_result,
+            "Blitzar and arkworks MSM results should match"
+        );
+    }
+
+    #[test]
+    fn test_blitzar_vs_arkworks_poly_msm() {
+        let mut rng = thread_rng();
+        let n = 4;
+        let size = 1 << n;
+
+        let points: Vec<G1Affine> = (0..size).map(|_| G1Affine::rand(&mut rng)).collect();
+        let coeffs: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+        let poly = DensePolynomial::new(coeffs);
+
+        // Compute using arkworks (generic implementation)
+        let arkworks_result: Bn254G1Projective = poly_msm(&points, &poly).unwrap();
+
+        // Compute using blitzar
+        let blitzar_result_affine = blitzar_msm::bn254_poly_msm(&points, &poly).unwrap();
+        let blitzar_result = blitzar_result_affine.into_group();
+
+        assert_eq!(
+            arkworks_result, blitzar_result,
+            "Blitzar and arkworks polynomial MSM results should match"
+        );
+    }
+
+    #[test]
+    fn test_blitzar_vs_arkworks_batch_poly_msm() {
+        let mut rng = thread_rng();
+        let n = 4;
+        let size = 1 << n;
+        let batch_size = 3;
+
+        let points: Vec<G1Affine> = (0..size).map(|_| G1Affine::rand(&mut rng)).collect();
+        let polys: Vec<DensePolynomial<Fr>> = (0..batch_size)
+            .map(|_| {
+                let coeffs: Vec<Fr> = (0..size).map(|_| Fr::rand(&mut rng)).collect();
+                DensePolynomial::new(coeffs)
+            })
+            .collect();
+
+        // Compute using arkworks (generic implementation)
+        let arkworks_results: Vec<Bn254G1Projective> = batch_poly_msm(&points, &polys).unwrap();
+
+        // Compute using blitzar
+        let blitzar_results_affine = blitzar_msm::bn254_batch_poly_msm(&points, &polys).unwrap();
+        let blitzar_results: Vec<Bn254G1Projective> = blitzar_results_affine
+            .into_iter()
+            .map(|r| r.into_group())
+            .collect();
+
+        assert_eq!(arkworks_results.len(), blitzar_results.len());
+        for (i, (ark, blz)) in arkworks_results
+            .iter()
+            .zip(blitzar_results.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                ark, blz,
+                "Blitzar and arkworks batch polynomial MSM results should match at index {i}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_blitzar_vs_arkworks_msm_empty() {
+        use ark_std::Zero;
+
+        // Test edge case: empty inputs
+        let points: Vec<G1Affine> = vec![];
+        let scalars: Vec<Fr> = vec![];
+
+        let arkworks_result: Bn254G1Projective = msm(&points, &scalars).unwrap();
+        let blitzar_result_affine = blitzar_msm::bn254_blitzar_msm(&points, &scalars).unwrap();
+        let blitzar_result = blitzar_result_affine.into_group();
+
+        assert_eq!(arkworks_result, blitzar_result);
+        assert!(arkworks_result.is_zero());
+    }
+
+    #[test]
+    fn test_blitzar_vs_arkworks_msm_single() {
+        // Test edge case: single point
+        let mut rng = thread_rng();
+        let points = vec![G1Affine::rand(&mut rng)];
+        let scalars = vec![Fr::rand(&mut rng)];
+
+        let arkworks_result: Bn254G1Projective = msm(&points, &scalars).unwrap();
+        let blitzar_result_affine = blitzar_msm::bn254_blitzar_msm(&points, &scalars).unwrap();
+        let blitzar_result = blitzar_result_affine.into_group();
+
+        assert_eq!(arkworks_result, blitzar_result);
+    }
+
+    #[test]
+    fn test_blitzar_vs_arkworks_msm_large() {
+        // Test with larger input to stress GPU acceleration
+        let mut rng = thread_rng();
+        let n = 1000;
+
+        let points: Vec<G1Affine> = (0..n).map(|_| G1Affine::rand(&mut rng)).collect();
+        let scalars: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+
+        let arkworks_result: Bn254G1Projective = msm(&points, &scalars).unwrap();
+        let blitzar_result_affine = blitzar_msm::bn254_blitzar_msm(&points, &scalars).unwrap();
+        let blitzar_result = blitzar_result_affine.into_group();
+
+        assert_eq!(
+            arkworks_result, blitzar_result,
+            "Blitzar and arkworks should match even with large inputs"
+        );
+    }
 }

@@ -1,10 +1,11 @@
 use ark_bn254::{Bn254, Fr};
+use ark_ec::CurveGroup;
 use ark_poly::DenseMultilinearExtension;
 use ark_poly_commit::multilinear_pc::MultilinearPC;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
 use dp_crypto::{
-    arkyper::{CommitmentScheme, HyperKZG},
+    arkyper::{CommitmentScheme, HyperKZG, msm},
     poly::{dense::DensePolynomial as ADensePolynomial, slice::SmartSlice},
 };
 use jolt_core::poly::{
@@ -20,7 +21,9 @@ fn main() {
     divan::main();
 }
 
-const LENS: [usize; 3] = [12, 14, 16];
+const LENS: [usize; 3] = [12, 14, 24];
+const BATCH_SIZES: [usize; 4] = [2, 4, 200, 1000];
+const BATCH_POLY_LENS: [usize; 3] = [12, 14, 16];
 
 // Register a `fibonacci` function and benchmark it over multiple cases.
 #[divan::bench_group(sample_count = 3, sample_size = 1)]
@@ -40,6 +43,21 @@ mod commit {
         .bench_local_values(|(s, (pp, _))| {
             let poly = ADensePolynomial::new_from_smart_slice(SmartSlice::Borrowed(s.as_slice()));
             HyperKZG::<Bn254>::commit(&pp, &poly)
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    #[cfg(feature = "blitzar-msm")]
+    fn arkyper_commit_blitzar(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
+            (evals, HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n))
+        })
+        .bench_local_values(|(s, (pp, _))| {
+            let poly = ADensePolynomial::new_from_smart_slice(SmartSlice::Borrowed(s.as_slice()));
+            let _comm = msm::poly_msm_bn254(pp.g1_powers(), &poly)
+                .unwrap()
+                .into_affine();
         })
     }
 
@@ -133,6 +151,52 @@ mod open {
         })
         .bench_local_values(|(pp, poly, point, mut prove_transcript)| {
             JoltHyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut prove_transcript)
+        })
+    }
+}
+
+#[divan::bench_group(sample_count = 3, sample_size = 1)]
+mod batch_commit {
+    use super::*;
+
+    fn arkworks_static_evals(n: usize) -> Vec<Fr> {
+        (0..n).map(|i| Fr::from(i as u64)).collect()
+    }
+
+    #[divan::bench(consts = BATCH_POLY_LENS, args = BATCH_SIZES)]
+    fn batch_commit_cpu<const N: usize>(b: Bencher, batch_size: usize) {
+        b.with_inputs(|| {
+            let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), N);
+            let polys: Vec<ADensePolynomial<Fr>> = (0..batch_size)
+                .map(|_| {
+                    let evals = arkworks_static_evals(2u32.pow(N as u32) as usize);
+                    ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals))
+                })
+                .collect();
+            (pp, polys)
+        })
+        .bench_local_values(|(pp, polys)| {
+            // Use the generic CPU-only batch implementation
+            msm::batch_poly_msm(pp.g1_powers(), &polys).unwrap()
+        })
+    }
+
+    #[divan::bench(consts = BATCH_POLY_LENS, args = BATCH_SIZES)]
+    #[cfg(feature = "blitzar-msm")]
+    fn batch_commit_gpu<const N: usize>(b: Bencher, batch_size: usize) {
+        b.with_inputs(|| {
+            let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), N);
+            let polys: Vec<ADensePolynomial<Fr>> = (0..batch_size)
+                .map(|_| {
+                    let evals = arkworks_static_evals(2u32.pow(N as u32) as usize);
+                    ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals))
+                })
+                .collect();
+            (pp, polys)
+        })
+        .bench_local_values(|(pp, polys)| {
+            // Use the bn254-specific implementation (which uses blitzar when feature is enabled)
+            msm::batch_poly_msm_bn254(pp.g1_powers(), &polys).unwrap()
         })
     }
 }
