@@ -6,7 +6,7 @@ use ark_ec::models::CurveConfig;
 use ark_ec::AffineRepr;
 use ark_ff::BigInteger;
 use ark_ff::PrimeField;
-use blitzar::compute::{init_backend, MsmHandle};
+use blitzar::compute::init_backend;
 
 use crate::poly::dense::DensePolynomial;
 

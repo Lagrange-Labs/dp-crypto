@@ -57,7 +57,6 @@ pub fn poly_msm_bn254<'a>(
     poly: &impl Borrow<DensePolynomial<'a, Bn254Fr>>,
 ) -> anyhow::Result<Bn254G1Projective> {
     use crate::arkyper::blitzar_msm;
-    use ark_ec::CurveGroup;
 
     let result = blitzar_msm::bn254_poly_msm(g1_powers, poly)?;
     Ok(result.into_group())
@@ -77,7 +76,6 @@ pub fn batch_poly_msm_bn254<'a>(
     polys: &[impl Borrow<DensePolynomial<'a, Bn254Fr>>],
 ) -> anyhow::Result<Vec<Bn254G1Projective>> {
     use crate::arkyper::blitzar_msm;
-    use ark_ec::CurveGroup;
 
     let results = blitzar_msm::bn254_batch_poly_msm(g1_powers, polys)?;
     Ok(results.into_iter().map(|r| r.into_group()).collect())
@@ -97,7 +95,6 @@ pub fn msm_bn254(
     coeffs: &[Bn254Fr],
 ) -> anyhow::Result<Bn254G1Projective> {
     use crate::arkyper::blitzar_msm;
-    use ark_ec::CurveGroup;
 
     let result = blitzar_msm::bn254_blitzar_msm(g_powers, coeffs)?;
     Ok(result.into_group())
