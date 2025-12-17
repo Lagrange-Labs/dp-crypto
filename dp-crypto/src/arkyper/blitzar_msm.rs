@@ -1,8 +1,7 @@
 use std::borrow::Borrow;
 use std::sync::Once;
 
-use ark_bn254::{g1::Config as G1Config, Fr as Bn254Fr, G1Affine as Bn254G1Affine};
-use ark_ec::models::CurveConfig;
+use ark_bn254::{Fr as Bn254Fr, G1Affine as Bn254G1Affine};
 use ark_ec::AffineRepr;
 use ark_ff::BigInteger;
 use ark_ff::PrimeField;
@@ -16,35 +15,6 @@ pub fn init_blitzar_backend() {
     INIT.call_once(|| {
         init_backend();
     });
-}
-
-fn blitzar_to_ark_point(bytes: &[u8]) -> anyhow::Result<Bn254G1Affine> {
-    if bytes.len() != 64 {
-        anyhow::bail!(
-            "Invalid point byte length: expected 64, got {}",
-            bytes.len()
-        );
-    }
-
-    // Check if it's the point at infinity (all zeros)
-    if bytes.iter().all(|&b| b == 0) {
-        return Ok(Bn254G1Affine::zero());
-    }
-
-    // Parse x coordinate
-    let x = <G1Config as CurveConfig>::BaseField::from_le_bytes_mod_order(&bytes[..32]);
-
-    // Parse y coordinate
-    let y = <G1Config as CurveConfig>::BaseField::from_le_bytes_mod_order(&bytes[32..64]);
-
-    let point = Bn254G1Affine::new_unchecked(x, y);
-
-    // Verify the point is on the curve
-    if !point.is_on_curve() {
-        anyhow::bail!("Resulting point is not on the curve");
-    }
-
-    Ok(point)
 }
 
 pub fn bn254_blitzar_msm(
@@ -128,8 +98,8 @@ mod tests {
     use super::*;
     use ark_bn254::G1Projective;
     use ark_ec::CurveGroup;
-    use ark_std::rand::thread_rng;
     use ark_std::UniformRand;
+    use ark_std::rand::thread_rng;
 
     #[test]
     fn test_blitzar_backend_init() {

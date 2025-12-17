@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 
-use ark_ec::{scalar_mul::variable_base::VariableBaseMSM, AffineRepr, CurveGroup};
+use ark_ec::{AffineRepr, CurveGroup, scalar_mul::variable_base::VariableBaseMSM};
 use ark_ff::PrimeField;
 use ark_std::cfg_iter;
 #[cfg(feature = "parallel")]
@@ -51,61 +51,38 @@ pub fn msm<G: CurveGroup<ScalarField = F>, F: PrimeField>(
 
 // BN254 specialized implementations using blitzar when feature is enabled
 
-#[cfg(feature = "blitzar-msm")]
 pub fn poly_msm_bn254<'a>(
     g1_powers: &[Bn254G1Affine],
     poly: &impl Borrow<DensePolynomial<'a, Bn254Fr>>,
 ) -> anyhow::Result<Bn254G1Projective> {
-    use crate::arkyper::blitzar_msm;
+    #[cfg(feature = "blitzar-msm")]
+    {
+        use crate::arkyper::blitzar_msm;
+        let result = blitzar_msm::bn254_poly_msm(g1_powers, poly)?;
+        Ok(result.into_group())
+    }
 
-    let result = blitzar_msm::bn254_poly_msm(g1_powers, poly)?;
-    Ok(result.into_group())
+    #[cfg(not(feature = "blitzar-msm"))]
+    {
+        poly_msm(g1_powers, poly)
+    }
 }
 
-#[cfg(not(feature = "blitzar-msm"))]
-pub fn poly_msm_bn254<'a>(
-    g1_powers: &[Bn254G1Affine],
-    poly: &impl Borrow<DensePolynomial<'a, Bn254Fr>>,
-) -> anyhow::Result<Bn254G1Projective> {
-    poly_msm(g1_powers, poly)
-}
-
-#[cfg(feature = "blitzar-msm")]
 pub fn batch_poly_msm_bn254<'a>(
     g1_powers: &[Bn254G1Affine],
     polys: &[impl Borrow<DensePolynomial<'a, Bn254Fr>>],
 ) -> anyhow::Result<Vec<Bn254G1Projective>> {
-    use crate::arkyper::blitzar_msm;
+    #[cfg(feature = "blitzar-msm")]
+    {
+        use crate::arkyper::blitzar_msm;
+        let results = blitzar_msm::bn254_batch_poly_msm(g1_powers, polys)?;
+        Ok(results.into_iter().map(|r| r.into_group()).collect())
+    }
 
-    let results = blitzar_msm::bn254_batch_poly_msm(g1_powers, polys)?;
-    Ok(results.into_iter().map(|r| r.into_group()).collect())
-}
-
-#[cfg(not(feature = "blitzar-msm"))]
-pub fn batch_poly_msm_bn254<'a>(
-    g1_powers: &[Bn254G1Affine],
-    polys: &[impl Borrow<DensePolynomial<'a, Bn254Fr>>],
-) -> anyhow::Result<Vec<Bn254G1Projective>> {
-    batch_poly_msm(g1_powers, polys)
-}
-
-#[cfg(feature = "blitzar-msm")]
-pub fn msm_bn254(
-    g_powers: &[Bn254G1Affine],
-    coeffs: &[Bn254Fr],
-) -> anyhow::Result<Bn254G1Projective> {
-    use crate::arkyper::blitzar_msm;
-
-    let result = blitzar_msm::bn254_blitzar_msm(g_powers, coeffs)?;
-    Ok(result.into_group())
-}
-
-#[cfg(not(feature = "blitzar-msm"))]
-pub fn msm_bn254(
-    g_powers: &[Bn254G1Affine],
-    coeffs: &[Bn254Fr],
-) -> anyhow::Result<Bn254G1Projective> {
-    msm(g_powers, coeffs)
+    #[cfg(not(feature = "blitzar-msm"))]
+    {
+        batch_poly_msm(g1_powers, polys)
+    }
 }
 
 #[cfg(test)]
@@ -113,23 +90,19 @@ mod tests {
     use super::*;
     use ark_bn254::{Fr, G1Affine};
     use ark_std::rand::thread_rng;
-    use ark_std::UniformRand;
+    use ark_std::{UniformRand, Zero};
 
     #[test]
-    fn test_bn254_specialized_msm() {
+    fn test_bn254_msm() {
         let mut rng = thread_rng();
         let n = 100;
 
         let points: Vec<G1Affine> = (0..n).map(|_| G1Affine::rand(&mut rng)).collect();
         let scalars: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
 
-        // Test specialized version
-        let result_specialized = msm_bn254(&points, &scalars).unwrap();
+        let result: Bn254G1Projective = msm(&points, &scalars).unwrap();
 
-        // Test generic version
-        let result_generic: Bn254G1Projective = msm(&points, &scalars).unwrap();
-
-        assert_eq!(result_specialized, result_generic);
+        assert!(!result.is_zero());
     }
 
     #[test]
@@ -185,8 +158,8 @@ mod blitzar_comparison_tests {
     use crate::arkyper::blitzar_msm;
     use ark_bn254::{Fr, G1Affine};
     use ark_ec::CurveGroup;
-    use ark_std::rand::thread_rng;
     use ark_std::UniformRand;
+    use ark_std::rand::thread_rng;
     use pretty_assertions::assert_eq;
 
     #[test]
