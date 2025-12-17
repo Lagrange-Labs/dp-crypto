@@ -3,13 +3,12 @@ use std::{collections::BTreeMap, marker::PhantomData, sync::Arc};
 use crate::{
     poly::dense::DensePolynomial,
     sumcheck::{
-        Expression, WitnessId,
         expression::monomial::Term,
-        macros::{entered_span, exit_span},
         random_mle_list,
         util::{ceil_log2, log2_strict},
         utils::eval_by_expr_with_instance,
         virtual_poly::{MonomialTerms, VirtualPolynomial},
+        Expression, WitnessId,
     },
 };
 use ark_ff::PrimeField;

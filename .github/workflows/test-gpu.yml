@@ -36,8 +36,8 @@ jobs:
     - name: Build (default features)
       run: cargo build --verbose
     - name: Build (all stable features)
-      run: cargo build --verbose --features=all-stable
+      run: cargo build --features=all-stable
     - name: Run tests (all stable features)
-      run: cargo test --verbose --features=blitzar-msm
+      run: cargo test --features=blitzar-msm
 
 

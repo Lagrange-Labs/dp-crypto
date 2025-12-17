@@ -15,6 +15,3 @@ macro_rules! exit_span {
         $first.exit()
     };
 }
-
-pub(crate) use entered_span;
-pub(crate) use exit_span;
