@@ -3,9 +3,10 @@ use std::sync::Once;
 
 use ark_bn254::{Fr as Bn254Fr, G1Affine as Bn254G1Affine};
 use ark_ec::AffineRepr;
-use ark_ff::BigInteger;
 use ark_ff::PrimeField;
 use blitzar::compute::init_backend;
+use blitzar::sequence::Sequence;
+use rayon::prelude::*;
 
 use crate::poly::dense::DensePolynomial;
 
@@ -32,16 +33,13 @@ pub fn bn254_blitzar_msm(
     // Initialize backend if not already done
     init_blitzar_backend();
 
-    // Convert scalars to blitzar format
-    let scalar_bytes: Vec<[u8; 32]> = scalars
-        .iter()
-        .map(|s| s.into_bigint().to_bytes_le().try_into().unwrap())
-        .collect();
+    // Convert scalars to BigInt format (avoids byte conversion overhead)
+    let scalar_bigints: Vec<_> = scalars.par_iter().map(|s| s.into_bigint()).collect();
     let mut blitzar_commitments = vec![Default::default(); 1];
 
     blitzar::compute::compute_bn254_g1_uncompressed_commitments_with_generators(
         &mut blitzar_commitments,
-        &[(&scalar_bytes).into()],
+        &[Sequence::from_raw_parts(&scalar_bigints, false)],
         points,
     );
 
@@ -56,30 +54,30 @@ pub fn bn254_poly_msm<'a>(
     bn254_blitzar_msm(&g1_powers[..coeffs.len()], coeffs)
 }
 
-pub fn bn254_batch_poly_msm<'a>(
+pub fn bn254_batch_poly_msm<'a, T>(
     g1_powers: &[Bn254G1Affine],
-    polys: &[impl Borrow<DensePolynomial<'a, Bn254Fr>>],
-) -> anyhow::Result<Vec<Bn254G1Affine>> {
+    polys: &[T],
+) -> anyhow::Result<Vec<Bn254G1Affine>>
+where
+    T: Borrow<DensePolynomial<'a, Bn254Fr>> + Sync,
+{
     if polys.is_empty() {
         return Ok(vec![]);
     }
 
     init_blitzar_backend();
 
-    let all_scalar_bytes: Vec<Vec<[u8; 32]>> = polys
-        .iter()
+    let all_scalar_bigints: Vec<Vec<_>> = polys
+        .par_iter()
         .map(|poly| {
             let coeffs = poly.borrow().evals_ref();
-            coeffs
-                .iter()
-                .map(|s| s.into_bigint().to_bytes_le().try_into().unwrap())
-                .collect()
+            coeffs.par_iter().map(|s| s.into_bigint()).collect()
         })
         .collect();
 
-    let scalar_refs: Vec<_> = all_scalar_bytes
+    let scalar_refs: Vec<_> = all_scalar_bigints
         .iter()
-        .map(|v| v.as_slice().into())
+        .map(|v| Sequence::from_raw_parts(v.as_slice(), false))
         .collect();
 
     let mut blitzar_commitments = vec![Default::default(); polys.len()];

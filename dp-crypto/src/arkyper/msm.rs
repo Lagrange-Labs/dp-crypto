@@ -68,10 +68,13 @@ pub fn poly_msm_bn254<'a>(
     }
 }
 
-pub fn batch_poly_msm_bn254<'a>(
+pub fn batch_poly_msm_bn254<'a, T>(
     g1_powers: &[Bn254G1Affine],
-    polys: &[impl Borrow<DensePolynomial<'a, Bn254Fr>>],
-) -> anyhow::Result<Vec<Bn254G1Projective>> {
+    polys: &[T],
+) -> anyhow::Result<Vec<Bn254G1Projective>>
+where
+    T: Borrow<DensePolynomial<'a, Bn254Fr>> + Sync,
+{
     #[cfg(feature = "blitzar-msm")]
     {
         use crate::arkyper::blitzar_msm;

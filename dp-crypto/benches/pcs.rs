@@ -5,7 +5,7 @@ use ark_poly_commit::multilinear_pc::MultilinearPC;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
 use dp_crypto::{
-    arkyper::{CommitmentScheme, HyperKZG, msm},
+    arkyper::{msm, CommitmentScheme, HyperKZG},
     poly::{dense::DensePolynomial as ADensePolynomial, slice::SmartSlice},
 };
 use jolt_core::poly::{
@@ -22,7 +22,7 @@ fn main() {
 }
 
 const LENS: [usize; 3] = [12, 14, 24];
-const BATCH_SIZES: [usize; 4] = [2, 4, 200, 1000];
+const BATCH_SIZES: [usize; 4] = [2, 4, 200, 2000];
 const BATCH_POLY_LENS: [usize; 3] = [12, 14, 16];
 
 // Register a `fibonacci` function and benchmark it over multiple cases.
@@ -30,14 +30,16 @@ const BATCH_POLY_LENS: [usize; 3] = [12, 14, 16];
 mod commit {
     use super::*;
 
-    fn arkworks_static_evals(n: usize) -> Vec<Fr> {
-        (0..n).map(|i| Fr::from(i as u64)).collect()
+    fn arkworks_random_evals(n: usize) -> Vec<Fr> {
+        use ark_std::UniformRand;
+        let mut rng = ark_std::rand::thread_rng();
+        vec![Fr::rand(&mut rng); n]
     }
 
     #[divan::bench(args = LENS)]
     fn arkyper_commit(b: Bencher, n: usize) {
         b.with_inputs(|| {
-            let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
+            let evals = arkworks_random_evals(2u32.pow(n as u32) as usize);
             (evals, HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n))
         })
         .bench_local_values(|(s, (pp, _))| {
@@ -50,7 +52,7 @@ mod commit {
     #[cfg(feature = "blitzar-msm")]
     fn arkyper_commit_blitzar(b: Bencher, n: usize) {
         b.with_inputs(|| {
-            let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
+            let evals = arkworks_random_evals(2u32.pow(n as u32) as usize);
             (evals, HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n))
         })
         .bench_local_values(|(s, (pp, _))| {
@@ -159,8 +161,10 @@ mod open {
 mod batch_commit {
     use super::*;
 
-    fn arkworks_static_evals(n: usize) -> Vec<Fr> {
-        (0..n).map(|i| Fr::from(i as u64)).collect()
+    fn arkworks_random_evals(n: usize) -> Vec<Fr> {
+        use ark_std::UniformRand;
+        let mut rng = ark_std::rand::thread_rng();
+        vec![Fr::rand(&mut rng); n]
     }
 
     #[divan::bench(consts = BATCH_POLY_LENS, args = BATCH_SIZES)]
@@ -169,7 +173,7 @@ mod batch_commit {
             let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), N);
             let polys: Vec<ADensePolynomial<Fr>> = (0..batch_size)
                 .map(|_| {
-                    let evals = arkworks_static_evals(2u32.pow(N as u32) as usize);
+                    let evals = arkworks_random_evals(2u32.pow(N as u32) as usize);
                     ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals))
                 })
                 .collect();
@@ -188,7 +192,7 @@ mod batch_commit {
             let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), N);
             let polys: Vec<ADensePolynomial<Fr>> = (0..batch_size)
                 .map(|_| {
-                    let evals = arkworks_static_evals(2u32.pow(N as u32) as usize);
+                    let evals = arkworks_random_evals(2u32.pow(N as u32) as usize);
                     ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals))
                 })
                 .collect();
