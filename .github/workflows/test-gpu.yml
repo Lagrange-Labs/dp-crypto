@@ -1,0 +1,120 @@
+name: "GPU testing with blitzar"
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+concurrency:
+  group: gpu-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: "Test GPU blitzar code against our own"
+    runs-on: ['gpu']
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    - name: Build (default features)
+      run: cargo build --verbose
+    - name: Build (all stable features)
+      run: cargo build --features=all-stable
+    - name: Run tests (all stable features)
+      run: cargo test --features=blitzar-msm
+
+  benchmark:
+    name: "Run GPU benchmarks"
+    runs-on: ['gpu']
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+
+    - name: Run GPU benchmark
+      id: run-benchmark
+      run: |
+        cargo bench batch_commit_gpu --features blitzar-msm 2>/dev/null | tee /tmp/benchmark-full.txt
+        if [ ! -s /tmp/benchmark-output.txt ]; then
+          echo "No benchmark results found, using full output" >&2
+          cp /tmp/benchmark-full.txt /tmp/benchmark-output.txt
+        fi
+
+    - name: Prepare comment body
+      id: prepare-comment
+      run: |
+        echo "<!-- gpu-benchmark-results -->" > /tmp/comment.md
+        echo "## 🚀 GPU Benchmark Results" >> /tmp/comment.md
+        echo "" >> /tmp/comment.md
+        echo "### batch_commit_gpu (blitzar-msm)" >> /tmp/comment.md
+        echo "" >> /tmp/comment.md
+        echo '```' >> /tmp/comment.md
+        cat /tmp/benchmark-output.txt >> /tmp/comment.md
+        echo '```' >> /tmp/comment.md
+        echo "" >> /tmp/comment.md
+        echo "---" >> /tmp/comment.md
+        echo "*Automated benchmark run on commit ${{ github.event.pull_request.head.sha }}*" >> /tmp/comment.md
+
+        COMMENT_BODY=$(cat /tmp/comment.md)
+        echo "comment_body<<EOF" >> $GITHUB_OUTPUT
+        echo "$COMMENT_BODY" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+
+    - name: Find existing comment
+      uses: peter-evans/find-comment@v3
+      id: find-comment
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        comment-author: 'github-actions[bot]'
+        body-includes: '<!-- gpu-benchmark-results -->'
+
+    - name: Delete old comment
+      if: steps.find-comment.outputs.comment-id != ''
+      uses: actions/github-script@v8
+      with:
+        script: |
+          github.rest.issues.deleteComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            comment_id: ${{ steps.find-comment.outputs.comment-id }}
+          })
+
+    - name: Post new PR comment
+      uses: peter-evans/create-or-update-comment@v4
+      with:
+        issue-number: ${{ github.event.pull_request.number }}
+        body: ${{ steps.prepare-comment.outputs.comment_body }}
+
+

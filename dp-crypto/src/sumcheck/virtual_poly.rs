@@ -5,11 +5,10 @@ use std::{
 use crate::{
     poly::dense::DensePolynomial,
     sumcheck::{
-        ArcMultilinearExtension, Expression, WitnessId,
-        macros::{entered_span, exit_span},
         monomial::Term,
         random_mle_list,
         util::{bit_decompose, create_uninit_vec, max_usable_threads},
+        ArcMultilinearExtension, Expression, WitnessId,
     },
 };
 use ark_ff::{Field, PrimeField};
@@ -19,7 +18,7 @@ use rayon::{
     iter::{IndexedParallelIterator, IntoParallelIterator, ParallelIterator},
     slice::ParallelSliceMut,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 pub type MonomialTermsType<F> = Vec<Term<F, Expression<F>>>;
 
@@ -201,19 +200,17 @@ impl<'a, F: PrimeField> VirtualPolynomial<'a, F> {
                     "some term product is empty scalar {scalar}, product {product:?}",
                 );
                 // sanity check: all mle in product must have same num_vars()
-                assert!(
-                    product
-                        .iter()
-                        .map(|expr| {
-                            match expr {
-                                Expression::WitIn(witin_id) => {
-                                    self.flattened_ml_extensions[*witin_id as usize].num_vars()
-                                }
-                                e => unimplemented!("unimplemented {:?}", e),
+                assert!(product
+                    .iter()
+                    .map(|expr| {
+                        match expr {
+                            Expression::WitIn(witin_id) => {
+                                self.flattened_ml_extensions[*witin_id as usize].num_vars()
                             }
-                        })
-                        .all_equal()
-                );
+                            e => unimplemented!("unimplemented {:?}", e),
+                        }
+                    })
+                    .all_equal());
 
                 self.aux_info.max_degree = max(self.aux_info.max_degree, product.len());
                 let mut indexed_product = Vec::with_capacity(product.len());
