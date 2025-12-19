@@ -66,7 +66,11 @@ jobs:
     - name: Run GPU benchmark
       id: run-benchmark
       run: |
-        cargo bench batch_commit_gpu --features blitzar-msm 2>&1 | tee /tmp/benchmark-output.txt
+        cargo bench batch_commit_gpu --features blitzar-msm 2>/dev/null | tee /tmp/benchmark-full.txt
+        if [ ! -s /tmp/benchmark-output.txt ]; then
+          echo "No benchmark results found, using full output" >&2
+          cp /tmp/benchmark-full.txt /tmp/benchmark-output.txt
+        fi
 
     - name: Prepare comment body
       id: prepare-comment
