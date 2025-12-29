@@ -314,7 +314,7 @@ fn kzg_verify_batch<P: Pairing, ProofTranscript: Transcript>(
     P::multi_pairing([l, -r], [vk.kzg_vk.h, vk.kzg_vk.beta_h]).is_zero()
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HyperKZG<P: Pairing> {
     _phantom: PhantomData<P>,
 }
