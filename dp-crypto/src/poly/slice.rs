@@ -1,4 +1,4 @@
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize, Valid};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     hash::{Hash, Hasher},
@@ -178,5 +178,43 @@ where
         D: Deserializer<'de>,
     {
         deserialize(deserializer).map(SmartSlice::Owned)
+    }
+}
+
+impl<'a, T> CanonicalSerialize for SmartSlice<'a, T>
+where
+    T: CanonicalSerialize,
+{
+    fn serialize_with_mode<W: std::io::Write>(
+        &self,
+        writer: W,
+        compress: ark_serialize::Compress,
+    ) -> Result<(), ark_serialize::SerializationError> {
+        self.as_slice().serialize_with_mode(writer, compress)
+    }
+
+    fn serialized_size(&self, compress: ark_serialize::Compress) -> usize {
+        self.as_slice().serialized_size(compress)
+    }
+}
+
+impl<'a, T: Send + Sync> Valid for SmartSlice<'a, T> {
+    fn check(&self) -> Result<(), ark_serialize::SerializationError> {
+        Ok(())
+    }
+}
+
+impl<'a, T> CanonicalDeserialize for SmartSlice<'a, T>
+where
+    T: CanonicalDeserialize + Send + Sync,
+{
+    fn deserialize_with_mode<R: std::io::Read>(
+        reader: R,
+        compress: ark_serialize::Compress,
+        validate: ark_serialize::Validate,
+    ) -> Result<Self, ark_serialize::SerializationError> {
+        let slice =
+            <Vec<T> as CanonicalDeserialize>::deserialize_with_mode(reader, compress, validate)?;
+        Ok(SmartSlice::Owned(slice))
     }
 }

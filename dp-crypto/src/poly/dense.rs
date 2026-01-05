@@ -3,14 +3,19 @@
 #[cfg(feature = "parallel")]
 use crate::poly::eq::EQ_PARALLEL_THRESHOLD;
 use anyhow::ensure;
-use ark_ff::Field;
+use ark_ff::{Field, Zero};
+use ark_poly::{MultilinearExtension, Polynomial};
 use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
-use ark_std::rand::{Rng, RngCore};
+use ark_std::{
+    cfg_iter, cfg_iter_mut,
+    rand::{Rng, RngCore},
+};
 use core::ops::Index;
 use either::Either;
 use rayon::iter::IndexedParallelIterator;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
+use std::ops::{Add, AddAssign, Neg, SubAssign};
 
 use crate::{
     poly::{eq, field::mul_01_optimized, slice::SmartSlice, unsafe_allocate_zero_vec},
@@ -40,15 +45,26 @@ pub enum FixOrder {
 }
 
 // Field trait bound required for CanonicalSerialize and CanonicalDeserialize
-#[derive(Clone, Default, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Clone,
+    Default,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    CanonicalSerialize,
+    CanonicalDeserialize,
+    Serialize,
+    Deserialize,
+)]
 #[serde(bound(
     serialize = "F: CanonicalSerialize",
     deserialize = "F: CanonicalDeserialize"
 ))]
-pub struct DensePolynomial<'a, F: Field> {
+pub struct DensePolynomial<'b, F: Field> {
     num_vars: usize, // the number of variables in the multilinear polynomial
     len: usize,
-    z: SmartSlice<'a, F>,
+    z: SmartSlice<'b, F>,
     padded_num_vars: Option<usize>,
 }
 
@@ -84,6 +100,134 @@ macro_rules! split_eval_chunks {
             .take($num_chunks)
             .collect::<Vec<_>>()
     }};
+}
+
+impl<'a, F: Field> Neg for DensePolynomial<'a, F> {
+    type Output = Self;
+
+    fn neg(self) -> Self::Output {
+        if self.is_zero() {
+            return self;
+        }
+        let evals = cfg_iter!(self.z).map(|a| -*a).collect();
+        DensePolynomial {
+            num_vars: self.num_vars,
+            len: self.len,
+            z: SmartSlice::Owned(evals),
+            padded_num_vars: self.padded_num_vars,
+        }
+    }
+}
+
+impl<'a, F: Field> Zero for DensePolynomial<'a, F> {
+    fn zero() -> Self {
+        Self {
+            num_vars: 0,
+            len: 1,
+            z: SmartSlice::Owned(vec![F::ZERO]),
+            padded_num_vars: None,
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.num_vars() == 0 && self.z[0].is_zero()
+    }
+}
+
+impl<'b, 'c, F: Field> Add<&'b DensePolynomial<'c, F>> for &DensePolynomial<'c, F> {
+    type Output = DensePolynomial<'c, F>;
+
+    fn add(self, rhs: &'b DensePolynomial<'c, F>) -> Self::Output {
+        if self.is_zero() {
+            return rhs.clone();
+        }
+        if rhs.is_zero() {
+            return self.clone();
+        }
+        let evals = cfg_iter!(self.z)
+            .zip(cfg_iter!(rhs.z))
+            .map(|(a, b)| *a + *b)
+            .collect();
+        DensePolynomial {
+            num_vars: self.num_vars,
+            len: self.len,
+            z: SmartSlice::Owned(evals),
+            padded_num_vars: self.padded_num_vars,
+        }
+    }
+}
+
+impl<'a, F: Field> Add for DensePolynomial<'a, F> {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        &self + &rhs
+    }
+}
+
+impl<'a, 'b, F: Field> AddAssign<(F, &'b Self)> for DensePolynomial<'a, F> {
+    #[allow(clippy::suspicious_op_assign_impl)]
+    fn add_assign(&mut self, rhs: (F, &'b Self)) {
+        if rhs.1.is_zero() || rhs.0.is_zero() {
+            return;
+        }
+        cfg_iter_mut!(self.z)
+            .zip(cfg_iter!(rhs.1.z))
+            .for_each(|(a, b)| *a += rhs.0 * b);
+    }
+}
+
+impl<'a, 'b, F: Field> AddAssign<&'b Self> for DensePolynomial<'a, F> {
+    fn add_assign(&mut self, rhs: &'b Self) {
+        *self = &*self + rhs;
+    }
+}
+
+impl<'a, 'b, F: Field> SubAssign<&'b Self> for DensePolynomial<'a, F> {
+    fn sub_assign(&mut self, rhs: &'b Self) {
+        if rhs.is_zero() {
+            return;
+        }
+        cfg_iter_mut!(self.z)
+            .zip(cfg_iter!(rhs.z))
+            .for_each(|(a, b)| *a -= *b);
+    }
+}
+
+impl<'a, F: Field> Polynomial<F> for DensePolynomial<'a, F> {
+    type Point = Vec<F>;
+
+    fn degree(&self) -> usize {
+        self.num_vars()
+    }
+
+    fn evaluate(&self, point: &Self::Point) -> F {
+        self.evaluate(point).unwrap()
+    }
+}
+
+impl<'a, F: Field> MultilinearExtension<F> for DensePolynomial<'a, F> {
+    fn num_vars(&self) -> usize {
+        self.padded_num_vars.unwrap_or(self.num_vars)
+    }
+
+    fn rand<R: Rng>(num_vars: usize, rng: &mut R) -> Self {
+        Self::random(num_vars, rng)
+    }
+
+    fn relabel(&self, a: usize, b: usize, k: usize) -> Self {
+        let mut res = self.clone();
+        res.relabel_in_place(a, b, k);
+        res
+    }
+
+    fn fix_variables(&self, partial_point: &[F]) -> Self {
+        self.fix_low_variables(partial_point)
+    }
+
+    fn to_evaluations(&self) -> Vec<F> {
+        self.evals()
+    }
 }
 
 impl<'a, F: Field> DensePolynomial<'a, F> {
@@ -130,7 +274,7 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
     }
 
     pub fn num_vars(&self) -> usize {
-        self.padded_num_vars.unwrap_or(self.num_vars)
+        <Self as MultilinearExtension<F>>::num_vars(self)
     }
 
     pub fn len(&self) -> usize {

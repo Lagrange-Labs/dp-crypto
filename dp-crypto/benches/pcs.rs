@@ -1,6 +1,4 @@
 use ark_bn254::{Bn254, Fr};
-use ark_poly::DenseMultilinearExtension;
-use ark_poly_commit::multilinear_pc::MultilinearPC;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
 use dp_crypto::{
@@ -27,6 +25,8 @@ const NUM_BATCHED_POLYS: [usize; 2] = [3, 5];
 // Register a `fibonacci` function and benchmark it over multiple cases.
 #[divan::bench_group(sample_count = 3, sample_size = 1)]
 mod commit {
+    use dp_crypto::arkyper::ark_pcs::ArkPcs;
+
     use super::*;
 
     fn arkworks_static_evals(n: usize) -> Vec<Fr> {
@@ -61,17 +61,11 @@ mod commit {
     #[divan::bench(args = LENS)]
     fn arkworks_commit(b: Bencher, n: usize) {
         b.with_inputs(|| {
-            let values = arkworks_static_evals(2u32.pow(n as u32) as usize);
-            let up = MultilinearPC::<Bn254>::setup(n, &mut thread_rng());
-            (values, MultilinearPC::trim(&up, n))
+            let poly = ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize));
+            let (pk, _) = ArkPcs::<Bn254>::test_setup(&mut thread_rng(), n);
+            (poly, pk)
         })
-        .bench_local_values(|(s, (pk, _))| {
-            let poly = DenseMultilinearExtension::from_evaluations_slice(
-                s.len().ilog2() as usize,
-                s.as_slice(),
-            );
-            MultilinearPC::<Bn254>::commit(&pk, &poly)
-        })
+        .bench_local_values(|(poly, pk)| ArkPcs::<Bn254>::commit(&pk, &poly))
     }
 
     #[divan::bench(args = LENS)]
@@ -164,6 +158,7 @@ mod commit {
 mod open {
     use ark_bn254::Fr;
     use ark_ff::AdditiveGroup;
+    use dp_crypto::arkyper::ark_pcs::ArkPcs;
     use dp_crypto::arkyper::transcript::Transcript;
     use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
     use jolt_core::field::JoltField;
@@ -221,15 +216,18 @@ mod open {
     fn arkworks_multilinear_open(b: Bencher, n: usize) {
         b.with_inputs(|| {
             let values = arkworks_static_evals(2u32.pow(n as u32) as usize);
-            let up = MultilinearPC::<Bn254>::setup(n, &mut thread_rng());
-            let (pk, _) = MultilinearPC::trim(&up, n);
-            let poly = DenseMultilinearExtension::from_evaluations_slice(n, values.as_slice());
-            let r_len = poly.num_vars;
+            let (pk, _) = ArkPcs::<Bn254>::test_setup(&mut thread_rng(), n);
+            let poly = ADensePolynomial::new(values);
+            let r_len = poly.num_vars();
             let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
-            (pk, poly, point)
+            let transcript = Blake3Transcript::new(b"ark_pcs_test");
+            (pk, poly, point, transcript)
         })
-        .bench_local_values(|(pk, poly, point)| MultilinearPC::<Bn254>::open(&pk, &poly, &point))
+        .bench_local_values(|(pk, poly, point, mut transcript)| {
+            ArkPcs::<Bn254>::prove(&pk, &poly, &point, None, &mut transcript)
+        })
     }
+
     #[divan::bench(args = LENS)]
     fn jolt_hyperkzg_open(b: Bencher, n: usize) {
         b.with_inputs(|| {

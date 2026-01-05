@@ -25,6 +25,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
+pub mod ark_pcs;
 pub mod interface;
 pub mod msm;
 pub mod transcript;
