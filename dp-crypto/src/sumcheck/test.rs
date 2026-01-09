@@ -77,13 +77,23 @@ fn test_sumcheck_with_different_degree() {
     let log_max_thread = ceil_log2(max_usable_threads());
     let nv = vec![1, 2, 3, 4];
     for num_threads in 1..log_max_thread {
-        test_sumcheck_with_different_degree_helper::<Fq>(1 << num_threads, &nv).unwrap();
+        test_sumcheck_with_different_degree_helper::<Fq>(1 << num_threads, &nv, false).unwrap();
+    }
+}
+
+#[test]
+fn test_sumcheck_with_different_degree_padded_polys() {
+    let log_max_thread = ceil_log2(max_usable_threads());
+    let nv = vec![1, 2, 3, 4];
+    for num_threads in 1..log_max_thread {
+        test_sumcheck_with_different_degree_helper::<Fq>(1 << num_threads, &nv, true).unwrap();
     }
 }
 
 fn test_sumcheck_with_different_degree_helper<F: PrimeField>(
     num_threads: usize,
     nv: &[usize],
+    pad_polynomials: bool,
 ) -> anyhow::Result<()> {
     let mut rng = thread_rng();
     let degree = 2;
@@ -97,6 +107,7 @@ fn test_sumcheck_with_different_degree_helper<F: PrimeField>(
         num_multiplicands_range,
         num_products,
         &mut rng,
+        pad_polynomials,
     );
 
     let poly = VirtualPolynomials::<F>::new_from_monomials(
@@ -106,7 +117,7 @@ fn test_sumcheck_with_different_degree_helper<F: PrimeField>(
             .iter_mut()
             .map(|Term { scalar, product }| Term {
                 scalar: *scalar,
-                product: product.iter_mut().map(Either::Right).collect_vec(),
+                product: product.iter().map(Either::Left).collect_vec(),
             })
             .collect_vec(),
     );

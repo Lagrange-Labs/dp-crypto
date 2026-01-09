@@ -25,6 +25,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -650,6 +661,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common",
+ "inout",
+]
+
+[[package]]
 name = "clap"
 version = "4.5.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -711,7 +732,7 @@ version = "0.2.0"
 source = "git+https://github.com/a16z/jolt#4c0b621cd2e1f27db5a348a475bae632fdc4e6ff"
 dependencies = [
  "ark-serialize",
- "derive_more",
+ "derive_more 2.0.1",
  "serde",
  "serde_json",
  "strum",
@@ -919,6 +940,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher",
+]
+
+[[package]]
 name = "derivative"
 version = "2.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -931,11 +961,32 @@ dependencies = [
 
 [[package]]
 name = "derive_more"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4a9b99b9cbbe49445b21764dc0625032a89b145a2642e67603e1c936f5458d05"
+dependencies = [
+ "derive_more-impl 1.0.0",
+]
+
+[[package]]
+name = "derive_more"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "093242cf7570c207c83073cf82f79706fe7b8317e98620a47d5be7c3d8497678"
 dependencies = [
- "derive_more-impl",
+ "derive_more-impl 2.0.1",
+]
+
+[[package]]
+name = "derive_more-impl"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7330aeadfbe296029522e6c40f315320aba36fc43a5b3632f3795348f3bd22"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.111",
+ "unicode-xid",
 ]
 
 [[package]]
@@ -1076,6 +1127,7 @@ dependencies = [
  "gkr_hashers",
  "itertools 0.14.0",
  "jolt-core",
+ "mpcs",
  "multilinear_extensions",
  "num-bigint",
  "p3",
@@ -1096,6 +1148,7 @@ dependencies = [
  "thiserror 2.0.17",
  "tracing",
  "transcript 0.1.0 (git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
+ "witness",
 ]
 
 [[package]]
@@ -1202,7 +1255,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1400,6 +1453,7 @@ version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
+ "serde",
  "typenum",
  "version_check",
 ]
@@ -1837,6 +1891,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1860,7 +1923,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -1947,7 +2010,7 @@ dependencies = [
  "chrono",
  "clap",
  "common",
- "derive_more",
+ "derive_more 2.0.1",
  "dirs",
  "dory-pcs",
  "eyre",
@@ -2182,6 +2245,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "mpcs"
+version = "0.1.0"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+dependencies = [
+ "aes",
+ "bincode",
+ "bitvec",
+ "clap",
+ "ctr",
+ "ff_ext",
+ "generic-array",
+ "itertools 0.13.0",
+ "multilinear_extensions",
+ "num-bigint",
+ "num-integer",
+ "p3",
+ "poseidon",
+ "rand",
+ "rand_chacha",
+ "rayon",
+ "serde",
+ "sumcheck",
+ "tracing",
+ "tracing-subscriber 0.3.20",
+ "transcript 0.1.0 (git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
+ "whir",
+ "witness",
+ "zeroize",
+]
+
+[[package]]
 name = "multilinear_extensions"
 version = "0.1.0"
 source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
@@ -2229,7 +2323,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2893,6 +2987,7 @@ checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
 dependencies = [
  "ppv-lite86",
  "rand_core",
+ "serde",
 ]
 
 [[package]]
@@ -3118,7 +3213,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3581,7 +3676,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3803,7 +3898,7 @@ dependencies = [
  "ark-serialize",
  "clap",
  "common",
- "derive_more",
+ "derive_more 2.0.1",
  "fnv",
  "itertools 0.10.5",
  "jolt-platform",
@@ -3977,6 +4072,12 @@ name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "unicode-xid"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 
 [[package]]
 name = "unroll"
@@ -4157,12 +4258,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "whir"
+version = "0.1.0"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+dependencies = [
+ "bincode",
+ "clap",
+ "derive_more 1.0.0",
+ "ff_ext",
+ "itertools 0.14.0",
+ "multilinear_extensions",
+ "p3",
+ "rand",
+ "rand_chacha",
+ "rayon",
+ "serde",
+ "sumcheck",
+ "tracing",
+ "transcript 0.1.0 (git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features)",
+ "transpose",
+ "witness",
+]
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -4480,6 +4604,19 @@ name = "wit-bindgen"
 version = "0.46.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
+
+[[package]]
+name = "witness"
+version = "0.1.0"
+source = "git+https://github.com/Lagrange-Labs/gkr-backend.git?branch=deep-prove-extra-features#24e8aced791d1879cd34ca999091fab161e020b7"
+dependencies = [
+ "ff_ext",
+ "multilinear_extensions",
+ "p3",
+ "rand",
+ "rayon",
+ "tracing",
+]
 
 [[package]]
 name = "writeable"

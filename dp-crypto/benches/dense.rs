@@ -1,10 +1,7 @@
 use ark_bn254::Fr;
 use ark_poly::{Polynomial, evaluations::multivariate::DenseMultilinearExtension};
 use divan::Bencher;
-use dp_crypto::poly::{
-    dense::{DensePolynomial, FixOrder},
-    slice::SmartSlice,
-};
+use dp_crypto::poly::{dense::DensePolynomial, slice::SmartSlice};
 
 fn main() {
     // Run registered benchmarks.
@@ -102,6 +99,11 @@ mod dense {
 
 #[divan::bench_group(sample_count = 20, sample_size = 1)]
 mod fixing {
+    use std::iter::repeat;
+
+    use ark_ff::AdditiveGroup;
+    use itertools::Itertools;
+
     use super::*;
     #[divan::bench(args = LENS)]
     fn arkyper_dense_low_to_high_parallel(b: Bencher, n: usize) {
@@ -109,14 +111,49 @@ mod fixing {
             let poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
                 arkworks_static_evals(2u32.pow(n as u32) as usize),
             ));
-            let r_len = poly.num_vars() / 2;
+            let r_len = n / 2;
             let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::LowToHigh);
-            }
+            poly.fix_low_variables_in_place_parallel(point);
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    fn arkyper_dense_low_padded_poly(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let mut poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
+                arkworks_static_evals(2u32.pow(n as u32) as usize),
+            ));
+            poly.zero_pad_num_vars(n + 2).unwrap();
+            let r_len = n / 2;
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            (poly, point)
+        })
+        .bench_local_refs(|(poly, point)| {
+            poly.fix_low_variables_in_place_parallel(point);
+        })
+    }
+    #[divan::bench(args = LENS)]
+    fn arkyper_dense_low_dummy_padded_poly(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let mut poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
+                arkworks_static_evals(2u32.pow(n as u32) as usize),
+            ));
+            poly = DensePolynomial::new(
+                poly.evals()
+                    .into_iter()
+                    .chain(repeat(Fr::ZERO))
+                    .take(1 << (n + 2))
+                    .collect_vec(),
+            );
+            let r_len = n / 2;
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            (poly, point)
+        })
+        .bench_local_refs(|(poly, point)| {
+            poly.fix_low_variables_in_place_parallel(point);
         })
     }
 
@@ -126,14 +163,50 @@ mod fixing {
             let poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
                 arkworks_static_evals(2u32.pow(n as u32) as usize),
             ));
-            let r_len = poly.num_vars() / 2;
+            let r_len = n / 2;
             let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
             (poly, point)
         })
         .bench_local_refs(|(poly, point)| {
-            for r_i in point {
-                poly.par_fix_mut(*r_i, FixOrder::HighToLow);
-            }
+            poly.fix_high_variables_in_place_parallel(point);
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    fn arkyper_dense_high_padded_poly(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let mut poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
+                arkworks_static_evals(2u32.pow(n as u32) as usize),
+            ));
+            poly.zero_pad_num_vars(n + 2).unwrap();
+            let r_len = n / 2;
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            (poly, point)
+        })
+        .bench_local_refs(|(poly, point)| {
+            poly.fix_high_variables_in_place_parallel(point);
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    fn arkyper_dense_high_dummy_padded_poly(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let mut poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
+                arkworks_static_evals(2u32.pow(n as u32) as usize),
+            ));
+            poly = DensePolynomial::new(
+                poly.evals()
+                    .into_iter()
+                    .chain(repeat(Fr::ZERO))
+                    .take(1 << (n + 2))
+                    .collect_vec(),
+            );
+            let r_len = n / 2;
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            (poly, point)
+        })
+        .bench_local_refs(|(poly, point)| {
+            poly.fix_high_variables_in_place_parallel(point);
         })
     }
 }
