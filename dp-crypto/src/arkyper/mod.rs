@@ -22,6 +22,8 @@ use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
+#[cfg(any(feature = "cuda", feature = "opencl"))]
+pub mod gpu_msm;
 pub mod interface;
 pub mod msm;
 pub mod transcript;

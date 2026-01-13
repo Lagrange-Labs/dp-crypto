@@ -16,5 +16,7 @@ macro_rules! exit_span {
     };
 }
 
+#[allow(unused_imports)]
 pub(crate) use entered_span;
+#[allow(unused_imports)]
 pub(crate) use exit_span;
