@@ -22,6 +22,8 @@ fn main() {
 
 const LENS: [usize; 3] = [12, 14, 16];
 
+const NUM_BATCHED_POLYS: [usize; 2] = [3, 5];
+
 // Register a `fibonacci` function and benchmark it over multiple cases.
 #[divan::bench_group(sample_count = 3, sample_size = 1)]
 mod commit {
@@ -38,8 +40,21 @@ mod commit {
             (evals, HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n))
         })
         .bench_local_values(|(s, (pp, _))| {
-            let poly = ADensePolynomial::new_from_smart_slice(SmartSlice::Borrowed(s.as_slice()));
+            let poly = ADensePolynomial::new(s);
             HyperKZG::<Bn254>::commit(&pp, &poly)
+        })
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    fn arkyper_batch_commit<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let polys = (0..NUM_BATCHED_POLYS)
+                .map(|_| ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize)))
+                .collect::<Vec<_>>();
+            (polys, HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n))
+        })
+        .bench_local_values(|(polys, (pp, _))| {
+            HyperKZG::<Bn254>::batch_commit(&pp, &polys).unwrap()
         })
     }
 
@@ -70,12 +85,86 @@ mod commit {
             JoltHyperKZG::<Bn254>::commit(&setup, &poly)
         })
     }
+
+    #[divan::bench(args = LENS)]
+    #[cfg(feature = "nightly-benches")]
+    fn basefold_commit(b: Bencher, n: usize) {
+        use ff_ext::GoldilocksExt2;
+        use mpcs::{Basefold, BasefoldRSParams, PolynomialCommitmentScheme};
+        use multilinear_extensions::{mle::MultilinearExtension, util::transpose};
+        use witness::RowMajorMatrix;
+
+        type E = GoldilocksExt2;
+        type Pcs = Basefold<E, BasefoldRSParams>;
+
+        b.with_inputs(|| {
+            let mle = MultilinearExtension::<E>::random(n, &mut thread_rng());
+            let poly_size = mle.evaluations.len();
+            let (pp, _) = {
+                Pcs::trim(
+                    Pcs::setup(poly_size, mpcs::SecurityLevel::Conjecture100bits).unwrap(),
+                    poly_size,
+                )
+                .unwrap()
+            };
+            let rmm = RowMajorMatrix::new_by_inner_matrix(
+                p3::matrix::dense::DenseMatrix::new(
+                    transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                    1,
+                ),
+                witness::InstancePaddingStrategy::Default,
+            );
+            (pp, rmm)
+        })
+        .bench_local_values(|(pp, rmm)| Pcs::batch_commit(&pp, vec![rmm]).unwrap());
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "nightly-benches")]
+    fn basefold_batch_commit<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        use ff_ext::GoldilocksExt2;
+        use mpcs::{Basefold, BasefoldRSParams, PolynomialCommitmentScheme};
+        use multilinear_extensions::{mle::MultilinearExtension, util::transpose};
+        use witness::RowMajorMatrix;
+
+        type E = GoldilocksExt2;
+        type Pcs = Basefold<E, BasefoldRSParams>;
+
+        b.with_inputs(|| {
+            let mles = (0..NUM_BATCHED_POLYS)
+                .map(|_| MultilinearExtension::<E>::random(n, &mut thread_rng()))
+                .collect::<Vec<_>>();
+            let poly_size = 1 << n;
+            let (pp, _) = {
+                Pcs::trim(
+                    Pcs::setup(poly_size, mpcs::SecurityLevel::Conjecture100bits).unwrap(),
+                    poly_size,
+                )
+                .unwrap()
+            };
+            let rmm = RowMajorMatrix::new_by_inner_matrix(
+                p3::matrix::dense::DenseMatrix::new(
+                    transpose(
+                        mles.iter()
+                            .map(|mle| mle.get_base_field_vec().to_vec())
+                            .collect(),
+                    )
+                    .concat(),
+                    mles.len(),
+                ),
+                witness::InstancePaddingStrategy::Default,
+            );
+            (pp, rmm)
+        })
+        .bench_local_values(|(pp, rmm)| Pcs::batch_commit(&pp, vec![rmm]).unwrap());
+    }
 }
 
 #[divan::bench_group(sample_count = 3, sample_size = 1)]
 mod open {
     use ark_bn254::Fr;
     use ark_ff::AdditiveGroup;
+    use dp_crypto::arkyper::transcript::Transcript;
     use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
     use jolt_core::field::JoltField;
     use jolt_core::poly::dense_mlpoly::DensePolynomial as JoltDense;
@@ -95,13 +184,36 @@ mod open {
             let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
             let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n);
             let poly = ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals));
-            let r_len = poly.num_vars;
+            let r_len = poly.num_vars();
             let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
             let transcript = Blake3Transcript::new(b"hyperkzg_test");
             (pp, poly, point, transcript)
         })
         .bench_local_values(|(pp, poly, point, mut prove_transcript)| {
             HyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut prove_transcript)
+        })
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    fn arkyper_batch_open<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let polys = (0..NUM_BATCHED_POLYS)
+                .map(|_| ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize)))
+                .collect::<Vec<_>>();
+            let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), n);
+            let point = (0..n).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            let transcript = Blake3Transcript::new(b"hyperkzg_test");
+            (pp, polys, point, transcript)
+        })
+        .bench_local_values(|(pp, polys, point, mut prove_transcript)| {
+            let challenges = (0..polys.len())
+                .map(|_| prove_transcript.challenge_scalar())
+                .collect::<Vec<_>>();
+            let poly = ADensePolynomial::linear_combination(
+                &polys.iter().collect::<Vec<_>>(),
+                &challenges,
+            );
+            HyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut prove_transcript).unwrap()
         })
     }
 
@@ -134,5 +246,225 @@ mod open {
         .bench_local_values(|(pp, poly, point, mut prove_transcript)| {
             JoltHyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut prove_transcript)
         })
+    }
+
+    #[divan::bench(args = LENS)]
+    #[cfg(feature = "nightly-benches")]
+    fn basefold_open(b: Bencher, n: usize) {
+        use ff_ext::{FromUniformBytes, GoldilocksExt2};
+        use mpcs::{Basefold, BasefoldRSParams, PolynomialCommitmentScheme};
+        use multilinear_extensions::{mle::MultilinearExtension, util::transpose};
+        use transcript::BasicTranscript;
+        use witness::RowMajorMatrix;
+
+        type E = GoldilocksExt2;
+        type T = BasicTranscript<E>;
+        type Pcs = Basefold<E, BasefoldRSParams>;
+
+        b.with_inputs(|| {
+            let mle = MultilinearExtension::<E>::random(n, &mut thread_rng());
+            let poly_size = mle.evaluations.len();
+            let (pp, _) = {
+                Pcs::trim(
+                    Pcs::setup(poly_size, mpcs::SecurityLevel::Conjecture100bits).unwrap(),
+                    poly_size,
+                )
+                .unwrap()
+            };
+            let r_len = mle.num_vars();
+            let point = (0..r_len)
+                .map(|_| E::random(&mut thread_rng()))
+                .collect::<Vec<_>>();
+            let eval = mle.evaluate(&point);
+            let transcript = T::new(b"basefold_bench");
+            let rmm = RowMajorMatrix::new_by_inner_matrix(
+                p3::matrix::dense::DenseMatrix::new(
+                    transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                    1,
+                ),
+                witness::InstancePaddingStrategy::Default,
+            );
+            let commitment = Pcs::batch_commit(&pp, vec![rmm]).unwrap();
+            (pp, point, eval, commitment, transcript)
+        })
+        .bench_local_values(|(pp, point, eval, commitment, mut prove_transcript)| {
+            Pcs::batch_open(
+                &pp,
+                vec![(&commitment, vec![(point, vec![eval])])],
+                &mut prove_transcript,
+            )
+            .unwrap()
+        });
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "nightly-benches")]
+    fn basefold_batch_open_single_rmm<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        use ff_ext::{FromUniformBytes, GoldilocksExt2};
+        use mpcs::{Basefold, BasefoldRSParams, PolynomialCommitmentScheme};
+        use multilinear_extensions::{mle::MultilinearExtension, util::transpose};
+        use transcript::BasicTranscript;
+        use witness::RowMajorMatrix;
+
+        type E = GoldilocksExt2;
+        type T = BasicTranscript<E>;
+        type Pcs = Basefold<E, BasefoldRSParams>;
+
+        b.with_inputs(|| {
+            let mles = (0..NUM_BATCHED_POLYS)
+                .map(|_| MultilinearExtension::<E>::random(n, &mut thread_rng()))
+                .collect::<Vec<_>>();
+            let poly_size = 1 << n;
+            let (pp, _) = {
+                Pcs::trim(
+                    Pcs::setup(poly_size, mpcs::SecurityLevel::Conjecture100bits).unwrap(),
+                    poly_size,
+                )
+                .unwrap()
+            };
+            let r_len = n;
+            let point = (0..r_len)
+                .map(|_| E::random(&mut thread_rng()))
+                .collect::<Vec<_>>();
+            let transcript = T::new(b"basefold_bench");
+            let rmm = RowMajorMatrix::new_by_inner_matrix(
+                p3::matrix::dense::DenseMatrix::new(
+                    transpose(
+                        mles.iter()
+                            .map(|mle| mle.get_base_field_vec().to_vec())
+                            .collect(),
+                    )
+                    .concat(),
+                    mles.len(),
+                ),
+                witness::InstancePaddingStrategy::Default,
+            );
+            let commitment = Pcs::batch_commit(&pp, vec![rmm]).unwrap();
+            let evals = mles
+                .iter()
+                .map(|mle| mle.evaluate(&point))
+                .collect::<Vec<_>>();
+            (pp, point, evals, commitment, transcript)
+        })
+        .bench_local_values(|(pp, point, evals, commitment, mut prove_transcript)| {
+            Pcs::batch_open(
+                &pp,
+                vec![(&commitment, vec![(point, evals)])],
+                &mut prove_transcript,
+            )
+            .unwrap()
+        });
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "nightly-benches")]
+    fn basefold_batch_open_single_commitment<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        use ff_ext::{FromUniformBytes, GoldilocksExt2};
+        use mpcs::{Basefold, BasefoldRSParams, PolynomialCommitmentScheme};
+        use multilinear_extensions::{mle::MultilinearExtension, util::transpose};
+        use transcript::BasicTranscript;
+        use witness::RowMajorMatrix;
+
+        type E = GoldilocksExt2;
+        type T = BasicTranscript<E>;
+        type Pcs = Basefold<E, BasefoldRSParams>;
+
+        b.with_inputs(|| {
+            let mles = (0..NUM_BATCHED_POLYS)
+                .map(|_| MultilinearExtension::<E>::random(n, &mut thread_rng()))
+                .collect::<Vec<_>>();
+            let poly_size = 1 << n;
+            let (pp, _) = {
+                Pcs::trim(
+                    Pcs::setup(poly_size, mpcs::SecurityLevel::Conjecture100bits).unwrap(),
+                    poly_size,
+                )
+                .unwrap()
+            };
+            let r_len = n;
+            let point = (0..r_len)
+                .map(|_| E::random(&mut thread_rng()))
+                .collect::<Vec<_>>();
+            let transcript = T::new(b"basefold_bench");
+            let rmms = mles.iter().map(|mle| {
+                RowMajorMatrix::new_by_inner_matrix(
+                    p3::matrix::dense::DenseMatrix::new(
+                        transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                        1,
+                    ),
+                    witness::InstancePaddingStrategy::Default,
+                )
+            }).collect::<Vec<_>>();
+            let commitment = Pcs::batch_commit(&pp, rmms).unwrap();
+            let claims = mles
+                .iter()
+                .map(|mle| (point.clone(), vec![mle.evaluate(&point)]))
+                .collect::<Vec<_>>();
+            (pp, claims, commitment, transcript)
+        })
+        .bench_local_values(|(pp, claims, commitment, mut prove_transcript)| {
+            Pcs::batch_open(
+                &pp,
+                vec![(&commitment, claims)],
+                &mut prove_transcript,
+            )
+            .unwrap()
+        });
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "nightly-benches")]
+    fn basefold_batch_open<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        use ff_ext::{FromUniformBytes, GoldilocksExt2};
+        use mpcs::{Basefold, BasefoldRSParams, PolynomialCommitmentScheme};
+        use multilinear_extensions::{mle::MultilinearExtension, util::transpose};
+        use transcript::BasicTranscript;
+        use witness::RowMajorMatrix;
+
+        type E = GoldilocksExt2;
+        type T = BasicTranscript<E>;
+        type Pcs = Basefold<E, BasefoldRSParams>;
+
+        b.with_inputs(|| {
+            let mles = (0..NUM_BATCHED_POLYS)
+                .map(|_| MultilinearExtension::<E>::random(n, &mut thread_rng()))
+                .collect::<Vec<_>>();
+            let poly_size = 1 << n;
+            let (pp, _) = {
+                Pcs::trim(
+                    Pcs::setup(poly_size, mpcs::SecurityLevel::Conjecture100bits).unwrap(),
+                    poly_size,
+                )
+                .unwrap()
+            };
+            let r_len = n;
+            let point = (0..r_len)
+                .map(|_| E::random(&mut thread_rng()))
+                .collect::<Vec<_>>();
+            let transcript = T::new(b"basefold_bench");
+            let comms = mles.iter().map(|mle| {
+                let rmm = RowMajorMatrix::new_by_inner_matrix(
+                    p3::matrix::dense::DenseMatrix::new(
+                        transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                        1,
+                    ),
+                    witness::InstancePaddingStrategy::Default,
+                );
+                Pcs::batch_commit(&pp, vec![rmm]).unwrap()
+            }).collect::<Vec<_>>();
+            let claims = mles
+                .iter()
+                .map(|mle| vec![(point.clone(), vec![mle.evaluate(&point)])])
+                .collect::<Vec<_>>();
+            (pp, claims, comms, transcript)
+        })
+        .bench_local_values(|(pp, claims, comms, mut prove_transcript)| {
+            Pcs::batch_open(
+                &pp,
+                comms.iter().zip(claims).collect(),
+                &mut prove_transcript,
+            )
+            .unwrap()
+        });
     }
 }

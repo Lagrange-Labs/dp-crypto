@@ -1,5 +1,6 @@
 use super::Transcript;
 
+#[derive(Clone)]
 pub struct Blake3Transcript {
     pub state: blake3::Hasher,
 }

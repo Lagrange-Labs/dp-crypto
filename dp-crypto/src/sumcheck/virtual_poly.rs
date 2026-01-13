@@ -6,7 +6,6 @@ use crate::{
     poly::dense::DensePolynomial,
     sumcheck::{
         ArcMultilinearExtension, Expression, WitnessId,
-        macros::{entered_span, exit_span},
         monomial::Term,
         random_mle_list,
         util::{bit_decompose, create_uninit_vec, max_usable_threads},

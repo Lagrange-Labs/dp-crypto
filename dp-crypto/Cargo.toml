@@ -28,8 +28,10 @@ syn = { version = "^2", features = ["full"] }
 sumcheck_macro.workspace = true
 sumcheck = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
 multilinear_extensions = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+mpcs = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
 ff_ext = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
 transcript = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
+witness = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
 p3 = { git = "https://github.com/Lagrange-Labs/gkr-backend.git", branch = "deep-prove-extra-features", optional = true }
 expander-arith = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "arith", features = ["halo2_asm"], optional = true }
 expander-poly = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "polynomials", optional = true }
@@ -43,8 +45,9 @@ parallel = [
     "ark-ff/parallel",
     "ark-poly/parallel",
     "ark-std/parallel",
+    "asm",
 ]
-nightly-benches = ["parallel", "dep:sumcheck", "dep:multilinear_extensions", "dep:ff_ext", "dep:transcript", "dep:p3", "dep:expander-arith", "dep:expander-poly", "dep:expander-hasher", "dep:expander-sumcheck" ]
+nightly-benches = ["parallel", "dep:sumcheck", "dep:multilinear_extensions", "dep:mpcs", "dep:ff_ext", "dep:transcript", "dep:witness", "dep:p3", "dep:expander-arith", "dep:expander-poly", "dep:expander-hasher", "dep:expander-sumcheck" ]
 all-stable = ["mono", "parallel"]
 asm = ["ark-ff/asm"]
 mono = []
@@ -58,6 +61,7 @@ ark-sumcheck = { git = "https://github.com/eigmax/sumcheck.git", features = ["st
 hyperplonk = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "subroutines" }
 hyper-arith = { git = "https://github.com/alireza-shirzad/hyperplonk.git", features = ["parallel"], package = "arithmetic" }
 jolt-core = { git = "https://github.com/a16z/jolt" }
+rmp-serde = "1.3.0"
 
 [[bench]]
 harness = false

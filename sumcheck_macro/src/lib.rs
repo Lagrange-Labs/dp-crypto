@@ -90,6 +90,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     // Part 3 - AdditiveArray
     // Generate c declarations used for optimising additions
     let mut c_declarations = TokenStream::new();
+    let mut c_declarations_length_one = TokenStream::new();
     for i in 1..=degree {
         if degree >= 2 {
             let n = degree - 1;
@@ -103,10 +104,19 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                     let c_last = ident(format!("c{i}_{}", j - 1));
                     quote! { let #c = #c_last + #c_last; }
                 };
+                let c_declaration = if j == 0 {
+                    quote! { let #c = - #v[0]; }
+                } else {
+                    declaration.clone()
+                };
                 c_declarations = quote! {
                     #c_declarations
                     #declaration
                 };
+                c_declarations_length_one = quote! {
+                    #c_declarations_length_one
+                    #c_declaration
+                }
             }
         }
     }
@@ -115,52 +125,76 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     let additive_converter = {
         let mut additive_array_items = TokenStream::new();
         let mut additive_array_first_item = TokenStream::new();
+        let mut length_one_items = TokenStream::new();
+
+        let gen_item = |i, j: u32, zero_second_item: bool| {
+            let v = ident(format!("v{j}"));
+            // Based on the current row element's degree i, generate the expression.
+            match i {
+                1 => {
+                    if zero_second_item {
+                        quote! {#v[0]}
+                    } else {
+                        quote! {#v[b]}
+                    }
+                }
+                2 => {
+                    if zero_second_item {
+                        quote! {F::ZERO}
+                    } else {
+                        quote! {#v[b + 1]}
+                    }
+                }
+                _ => {
+                    // We could do repeatedly add `#v[b + 1] - #v[b]`, but to optimise the
+                    // arithmetic operations, we precompute the values of `#v[b + 1] - #v[b]`
+                    // and store them in `c_declarations`. Then we can use these precomputed
+                    // c values to generate the expression.
+                    //
+                    // For example, c0 = #v[b + 1] - #v[b]
+                    // i = 3 means 1 x c0
+                    // i = 4 means 2 x c0 = c1
+                    // i = 5 means 3 x c0 = c0 + c1
+                    // i = 6 means 4 x c0 = c2
+                    // i = 7 means 5 x c0 = c0 + c2
+                    let c_terms =
+                        idx_of_one_bits(i - 2)
+                            .iter()
+                            .fold(TokenStream::new(), |acc, k| {
+                                let c = ident(format!("c{j}_{}", k));
+                                acc_add(acc, c)
+                            });
+                    if zero_second_item {
+                        quote! {#c_terms}
+                    } else {
+                        quote! {#c_terms + #v[b + 1]}
+                    }
+                }
+            }
+        };
 
         // Generate degree+1 row elements in AdditiveArray
         for i in 1..=(degree + 1) {
-            let item = mul_exprs(
-                (1..=degree)
-                    .map(|j: u32| {
-                        let v = ident(format!("v{j}"));
-                        // Based on the current row element's degree i, generate the expression.
-                        match i {
-                            1 => quote! {#v[b]},
-                            2 => quote! {#v[b + 1]},
-                            _ => {
-                                // We could do repeatedly add `#v[b + 1] - #v[b]`, but to optimise the
-                                // arithmetic operations, we precompute the values of `#v[b + 1] - #v[b]`
-                                // and store them in `c_declarations`. Then we can use these precomputed
-                                // c values to generate the expression.
-                                //
-                                // For example, c0 = #v[b + 1] - #v[b]
-                                // i = 3 means 1 x c0
-                                // i = 4 means 2 x c0 = c1
-                                // i = 5 means 3 x c0 = c0 + c1
-                                // i = 6 means 4 x c0 = c2
-                                // i = 7 means 5 x c0 = c0 + c2
-                                let c_terms = idx_of_one_bits(i - 2).iter().fold(
-                                    TokenStream::new(),
-                                    |acc, k| {
-                                        let c = ident(format!("c{j}_{}", k));
-                                        acc_add(acc, c)
-                                    },
-                                );
-                                quote! {#c_terms + #v[b + 1]}
-                            }
-                        }
-                    })
-                    .collect(),
-            );
+            let item = mul_exprs((1..=degree).map(|j: u32| gen_item(i, j, false)).collect());
 
             if i == 1 {
                 additive_array_first_item = item.clone();
             }
             additive_array_items = acc_list(additive_array_items, item);
+
+            let item = mul_exprs((1..=degree).map(|j: u32| gen_item(i, j, true)).collect());
+
+            length_one_items = acc_list(length_one_items, item)
         }
 
         let additive_array_items = quote! {
             #c_declarations
             AdditiveArray([#additive_array_items])
+        };
+
+        let length_one_additive_array_items = quote! {
+            #c_declarations_length_one
+            AdditiveArray([#length_one_items])
         };
 
         let iter = if parallalize {
@@ -205,7 +239,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                 PolyMeta::Phase2Only => {
                     // only main worker doing the calculation of phase2 only polynomial in order to avoid duplicate computation
                     if self.is_main_worker {
-                        let mut sum = (0..largest_even_below(v1.len())).map(
+                        let mut sum = (0..largest_even_below(v1.unpadded_len())).map(
                             |b| {
                                 #product
                             },
@@ -230,7 +264,7 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                     if num_var < expected_numvars_at_round {
                         // TODO optimize by caching computed result for later round reuse
                         // need to figure out how to cache in one place to support base/extension field
-                        let mut sum = (0..largest_even_below(v1.len())).map(
+                        let mut sum = (0..largest_even_below(v1.unpadded_len())).map(
                             |b| {
                                 #product
                             },
@@ -249,8 +283,10 @@ pub fn sumcheck_code_gen(input: proc_macro::TokenStream) -> proc_macro::TokenStr
                         if v1.len() == 1 {
                             let b = 0;
                             AdditiveArray::<_, #degree_plus_one>([#additive_array_first_item ; #degree_plus_one])
+                        } else if v1.unpadded_len() == 1 {
+                            #length_one_additive_array_items
                         } else {
-                            (0..largest_even_below(v1.len()))
+                            (0..largest_even_below(v1.unpadded_len()))
                                 #iter
                                 .map(|b| {
                                     #additive_array_items
