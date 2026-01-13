@@ -1,5 +1,8 @@
+#[allow(unused_imports)]
 use ark_bn254::{Bn254, Fr};
+#[allow(unused_imports)]
 use ark_poly::DenseMultilinearExtension;
+#[allow(unused_imports)]
 use ark_poly_commit::multilinear_pc::MultilinearPC;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
@@ -7,6 +10,7 @@ use dp_crypto::{
     arkyper::{CommitmentScheme, HyperKZG},
     poly::{dense::DensePolynomial as ADensePolynomial, slice::SmartSlice},
 };
+#[allow(unused_imports)]
 use jolt_core::poly::{
     commitment::{
         commitment_scheme::CommitmentScheme as CScheme, hyperkzg::HyperKZG as JoltHyperKZG,
@@ -16,13 +20,11 @@ use jolt_core::poly::{
 };
 
 fn main() {
-    // Run registered benchmarks.
     divan::main();
 }
 
-const LENS: [usize; 3] = [12, 14, 16];
+const LENS: [usize; 3] = [20, 23, 25];
 
-// Register a `fibonacci` function and benchmark it over multiple cases.
 #[divan::bench_group(sample_count = 3, sample_size = 1)]
 mod commit {
     use super::*;
@@ -77,10 +79,15 @@ mod open {
     use ark_bn254::Fr;
     use ark_ff::AdditiveGroup;
     use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
+    #[allow(unused_imports)]
     use jolt_core::field::JoltField;
+    #[allow(unused_imports)]
     use jolt_core::poly::dense_mlpoly::DensePolynomial as JoltDense;
+    #[allow(unused_imports)]
     use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial as JoltMLE;
+    #[allow(unused_imports)]
     use jolt_core::transcripts::Blake2bTranscript;
+    #[allow(unused_imports)]
     use jolt_core::transcripts::Transcript as T;
 
     use super::*;

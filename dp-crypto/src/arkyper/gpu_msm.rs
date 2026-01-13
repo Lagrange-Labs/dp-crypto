@@ -1,8 +1,12 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use ark_bn254::{Fr, G1Affine, G1Projective};
+use ark_bn254::{Fq, Fr, G1Affine, G1Projective};
+use ark_ec::AffineRepr;
 use ark_ff::PrimeField;
 use ec_gpu_gen::{G1AffineM, MultiexpKernel, program, rust_gpu_tools::Device, threadpool::Worker};
+
+pub static GPU_MSM: std::sync::LazyLock<Mutex<GpuMsm>> =
+    std::sync::LazyLock::new(|| Mutex::new(GpuMsm::new().expect("Failed to initialize GPU MSM")));
 
 pub struct GpuMsm {
     kernel: MultiexpKernel<'static, G1Affine>,
@@ -64,8 +68,8 @@ impl GpuMsm {
             ));
         }
 
-        let bases_gpu: Vec<G1AffineM> = bases.iter().map(|p| (*p).into()).collect();
-        let exps: Vec<_> = scalars.iter().map(|s| s.into_bigint()).collect();
+        let bases_gpu = convert_bases_to_gpu(bases);
+        let exps = convert_scalars_to_bigint(scalars);
 
         let result = self
             .kernel
@@ -92,8 +96,29 @@ impl Default for GpuMsm {
     }
 }
 
+fn fq_to_montgomery_bytes(x: &Fq) -> [u8; 32] {
+    let limbs = unsafe { std::mem::transmute::<Fq, [u64; 4]>(*x) };
+
+    let mut out = [0u8; 32];
+    for (i, limb) in limbs.iter().enumerate() {
+        let bytes = limb.to_le_bytes();
+        out[i * 8..(i + 1) * 8].copy_from_slice(&bytes);
+    }
+    out
+}
+
+fn g1_to_gpu(p: &G1Affine) -> G1AffineM {
+    match p.xy() {
+        Some((x, y)) => G1AffineM {
+            x: fq_to_montgomery_bytes(&x),
+            y: fq_to_montgomery_bytes(&y),
+        },
+        None => G1AffineM::default(),
+    }
+}
+
 pub fn convert_bases_to_gpu(bases: &[G1Affine]) -> Vec<G1AffineM> {
-    bases.iter().map(|p| (*p).into()).collect()
+    bases.iter().map(g1_to_gpu).collect()
 }
 
 pub fn convert_scalars_to_bigint(scalars: &[Fr]) -> Vec<<Fr as PrimeField>::BigInt> {

@@ -7,6 +7,7 @@ use ark_std::cfg_iter;
 use rayon::prelude::*;
 
 use crate::poly::dense::DensePolynomial;
+
 pub fn poly_msm<'a, A: AffineRepr>(
     g1_powers: &[A],
     poly: &impl Borrow<DensePolynomial<'a, A::ScalarField>>,
@@ -15,7 +16,29 @@ pub fn poly_msm<'a, A: AffineRepr>(
     Ok(r.remove(0))
 }
 
+#[cfg(not(any(feature = "cuda", feature = "opencl")))]
 pub fn batch_poly_msm<'a, A: AffineRepr>(
+    g1_powers: &[A],
+    polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
+) -> anyhow::Result<Vec<A::Group>> {
+    batch_poly_msm_cpu(g1_powers, polys)
+}
+
+#[cfg(any(feature = "cuda", feature = "opencl"))]
+pub fn batch_poly_msm<'a, A: AffineRepr>(
+    g1_powers: &[A],
+    polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
+) -> anyhow::Result<Vec<A::Group>> {
+    use std::any::TypeId;
+
+    if TypeId::of::<A>() == TypeId::of::<ark_bn254::G1Affine>() {
+        batch_poly_msm_gpu_bn254(g1_powers, polys)
+    } else {
+        batch_poly_msm_cpu(g1_powers, polys)
+    }
+}
+
+pub fn batch_poly_msm_cpu<'a, A: AffineRepr>(
     g1_powers: &[A],
     polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
 ) -> anyhow::Result<Vec<A::Group>> {
@@ -26,13 +49,47 @@ pub fn batch_poly_msm<'a, A: AffineRepr>(
     let r = cfg_iter!(coeffs)
         .map(|coeffs| {
             let msm_size = coeffs.len();
-            // TODO: move to msm_bigint as they do in arkworks KZG
-            // https://github.com/arkworks-rs/poly-commit/blob/master/poly-commit/src/kzg10/mod.rs#L171-L204
             <A::Group as VariableBaseMSM>::msm(&g1_powers[..msm_size], coeffs)
                 .map_err(|e| anyhow::anyhow!("MSM error: {e}"))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(r)
+}
+
+#[cfg(any(feature = "cuda", feature = "opencl"))]
+pub fn batch_poly_msm_gpu_bn254<'a, A: AffineRepr>(
+    g1_powers: &[A],
+    polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
+) -> anyhow::Result<Vec<A::Group>> {
+    use std::sync::Arc;
+
+    use super::gpu_msm::{GPU_MSM, convert_bases_to_gpu, convert_scalars_to_bigint};
+
+    let bases: &[ark_bn254::G1Affine] = unsafe { std::mem::transmute(g1_powers) };
+    let bases_gpu = Arc::new(convert_bases_to_gpu(bases));
+
+    let results: Vec<A::Group> = polys
+        .iter()
+        .map(|poly| {
+            let coeffs = poly.borrow().evals_ref();
+            let scalars: &[ark_bn254::Fr] = unsafe { std::mem::transmute(coeffs) };
+            let msm_size = scalars.len();
+            let scalars_bigint = Arc::new(convert_scalars_to_bigint(&scalars[..msm_size]));
+
+            let bases_slice = Arc::new(bases_gpu[..msm_size].to_vec());
+
+            let result: ark_bn254::G1Projective = GPU_MSM
+                .lock()
+                .unwrap()
+                .msm_arc(bases_slice, scalars_bigint)
+                .map_err(|e| anyhow::anyhow!("GPU MSM error: {e}"))?;
+
+            let result_generic: A::Group = unsafe { std::mem::transmute_copy(&result) };
+            Ok(result_generic)
+        })
+        .collect::<anyhow::Result<Vec<_>>>()?;
+
+    Ok(results)
 }
 
 pub fn msm<G: CurveGroup<ScalarField = F>, F: PrimeField>(
