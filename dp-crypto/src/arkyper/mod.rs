@@ -8,6 +8,7 @@
 //! This means that Spartan's polynomial IOP can use commit to its polynomials as-is without incurring any interpolations or FFTs.
 //! (2) HyperKZG is specialized to use KZG as the univariate commitment scheme, so it includes several optimizations (both during the transformation of multilinear-to-univariate claims
 //! and within the KZG commitment scheme implementation itself).
+use crate::arkyper::transcript::AppendToTranscript;
 use crate::poly::dense::DensePolynomial;
 use anyhow::{bail, ensure};
 use ark_ec::{AffineRepr, CurveGroup, pairing::Pairing};
@@ -20,6 +21,8 @@ use rayon::iter::IndexedParallelIterator;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
+use serde::Deserialize;
+use serde::Serialize;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
@@ -77,8 +80,9 @@ impl<P: Pairing> HyperKZGSRS<P> {
     }
 }
 
-#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperKZGProverKey<P: Pairing> {
+    #[serde(with = "crate::serialization")]
     pub kzg_pk: Powers<'static, P>,
 }
 
@@ -88,13 +92,14 @@ impl<P: Pairing> HyperKZGProverKey<P> {
     }
 }
 
-#[derive(Clone, Debug, CanonicalSerialize, CanonicalDeserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct HyperKZGVerifierKey<P: Pairing> {
+    #[serde(with = "crate::serialization")]
     pub kzg_vk: VerifierKey<P>,
 }
 
-#[derive(Debug, Clone, PartialEq, CanonicalSerialize, CanonicalDeserialize)]
-pub struct HyperKZGCommitment<P: Pairing>(pub P::G1Affine);
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HyperKZGCommitment<P: Pairing>(#[serde(with = "crate::serialization")] pub P::G1Affine);
 
 impl<P: Pairing> Default for HyperKZGCommitment<P> {
     fn default() -> Self {
@@ -102,10 +107,13 @@ impl<P: Pairing> Default for HyperKZGCommitment<P> {
     }
 }
 
-#[derive(Clone, CanonicalSerialize, CanonicalDeserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct HyperKZGProof<P: Pairing> {
+    #[serde(with = "crate::serialization")]
     pub coms: Vec<P::G1Affine>,
+    #[serde(with = "crate::serialization")]
     pub w: Vec<P::G1Affine>,
+    #[serde(with = "crate::serialization")]
     pub v: Vec<Vec<P::ScalarField>>,
 }
 
@@ -308,7 +316,7 @@ fn kzg_verify_batch<P: Pairing, ProofTranscript: Transcript>(
     P::multi_pairing([l, -r], [vk.kzg_vk.h, vk.kzg_vk.beta_h]).is_zero()
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct HyperKZG<P: Pairing> {
     _phantom: PhantomData<P>,
 }
@@ -510,12 +518,23 @@ impl<P: Pairing> CommitmentScheme for HyperKZG<P> {
     }
 }
 
+impl<P: Pairing> AppendToTranscript for HyperKZGCommitment<P> {
+    fn append_to_transcript<ProofTranscript: Transcript>(&self, transcript: &mut ProofTranscript) {
+        transcript.append_points::<P::G1Affine>(&[&self.0]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
     use ark_bn254::{Bn254, Fr};
-    use ark_std::{UniformRand, rand::SeedableRng};
+    use ark_ff::{AdditiveGroup, Field};
+    use ark_std::{
+        UniformRand,
+        rand::{SeedableRng, thread_rng},
+    };
+    use itertools::Itertools;
 
     #[test]
     fn test_hyperkzg_large() {
@@ -557,6 +576,67 @@ mod tests {
                     .is_err()
             );
         }
+    }
+
+    #[test]
+    fn test_batch_open() -> anyhow::Result<()> {
+        const NUM_VARS: &[usize] = &[12, 14, 16];
+
+        let num_polys = NUM_VARS.len();
+        let max_num_vars = *NUM_VARS.iter().max().unwrap();
+
+        let rng = &mut thread_rng();
+
+        // generate polynomials
+        let polys = NUM_VARS
+            .iter()
+            .map(|num_vars| DensePolynomial::random(*num_vars, rng))
+            .collect_vec();
+
+        let (pp, vp) = HyperKZG::<Bn254>::test_setup(rng, max_num_vars);
+
+        let commitments = HyperKZG::batch_commit(&pp, &polys)?
+            .into_iter()
+            .map(|(commitment, _)| commitment)
+            .collect_vec();
+
+        let opening_point = (0..max_num_vars)
+            .map(|_| challenge::random_challenge::<Fr, _>(rng))
+            .collect_vec();
+
+        let evals = polys
+            .iter()
+            .map(|poly| poly.evaluate(&opening_point[..poly.num_vars()]))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        let coefficients = (0..num_polys)
+            .map(|_| challenge::random_challenge::<Fr, _>(rng))
+            .collect_vec();
+
+        let rlc_poly = DensePolynomial::linear_combination(
+            polys.iter().collect_vec().as_slice(),
+            &coefficients,
+        );
+        let mut transcript = Blake3Transcript::new(b"batch_open");
+
+        let proof = HyperKZG::prove(&pp, &rlc_poly, &opening_point, None, &mut transcript)?;
+
+        let comm = HyperKZG::combine_commitments(&commitments, &coefficients)?;
+
+        let eval = evals.into_iter().zip(coefficients).enumerate().fold(
+            Fr::ZERO,
+            |eval, (i, (ev, coeff))| {
+                let factor = (NUM_VARS[i]..max_num_vars).fold(Fr::ONE, |factor, var_index| {
+                    factor * (Fr::ONE - opening_point[var_index])
+                });
+                eval + ev * coeff * factor
+            },
+        );
+
+        assert_eq!(eval, rlc_poly.evaluate(&opening_point)?);
+
+        let mut transcript = Blake3Transcript::new(b"batch_open");
+
+        HyperKZG::verify(&vp, &comm, &opening_point, &eval, &proof, &mut transcript)
     }
 }
 

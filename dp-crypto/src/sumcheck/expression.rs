@@ -12,7 +12,7 @@ use ark_ff::PrimeField;
 use itertools::{Itertools, chain, izip};
 use num_bigint::BigUint;
 use rayon::iter::{IntoParallelIterator, IntoParallelRefIterator, ParallelIterator};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize};
 use std::{
     cmp::max,
     fmt::{Debug, Display},
@@ -25,7 +25,10 @@ pub type ChallengeId = u16;
 pub const MIN_PAR_SIZE: usize = 64;
 
 #[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(bound = "F: Serialize + DeserializeOwned")]
+#[serde(bound(
+    serialize = "F: ark_serialize::CanonicalSerialize",
+    deserialize = "F: ark_serialize::CanonicalDeserialize"
+))]
 pub enum Expression<F: PrimeField> {
     /// WitIn(Id)
     WitIn(WitnessId),
@@ -40,7 +43,7 @@ pub enum Expression<F: PrimeField> {
     /// Public Values, with global id counter shared with `Instance`
     InstanceScalar(Instance),
     /// Constant poly
-    Constant(F),
+    Constant(#[serde(with = "crate::serialization")] F),
     /// This is the sum of two expressions
     Sum(Box<Expression<F>>, Box<Expression<F>>),
     /// This is the product of two expressions
@@ -49,7 +52,12 @@ pub enum Expression<F: PrimeField> {
     /// where x is one of wit / fixed / instance, a and b are either constants or challenges
     ScaledSum(Box<Expression<F>>, Box<Expression<F>>, Box<Expression<F>>),
     /// Challenge(challenge_id, power, scalar, offset)
-    Challenge(ChallengeId, usize, F, F),
+    Challenge(
+        ChallengeId,
+        usize,
+        #[serde(with = "crate::serialization")] F,
+        #[serde(with = "crate::serialization")] F,
+    ),
 }
 
 impl<F: PrimeField> Debug for Expression<F> {

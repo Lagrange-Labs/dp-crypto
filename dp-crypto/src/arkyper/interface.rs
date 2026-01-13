@@ -1,23 +1,27 @@
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
 use ark_std::rand::{Rng, RngCore};
+use serde::{Serialize, de::DeserializeOwned};
 use std::{borrow::Borrow, fmt::Debug};
 
-use crate::{arkyper::Transcript, poly::dense::DensePolynomial};
+use crate::{
+    arkyper::{Transcript, transcript::AppendToTranscript},
+    poly::dense::DensePolynomial,
+};
 
 pub trait CommitmentScheme: Clone + Sync + Send + 'static {
     type Field: ark_ff::Field + Sized;
-    type ProverSetup: Clone + Sync + Send + Debug + CanonicalSerialize + CanonicalDeserialize;
-    type VerifierSetup: Clone + Sync + Send + Debug + CanonicalSerialize + CanonicalDeserialize;
+    type ProverSetup: Clone + Sync + Send + Debug + Serialize + DeserializeOwned;
+    type VerifierSetup: Clone + Sync + Send + Debug + Serialize + DeserializeOwned;
     type Commitment: Default
         + Debug
         + Sync
         + Send
         + PartialEq
-        + CanonicalSerialize
-        + CanonicalDeserialize
+        + Serialize
+        + DeserializeOwned
+        + AppendToTranscript
         + Clone;
-    type Proof: Sync + Send + CanonicalSerialize + CanonicalDeserialize + Clone + Debug;
-    type BatchedProof: Sync + Send + CanonicalSerialize + CanonicalDeserialize;
+    type Proof: Sync + Send + Serialize + DeserializeOwned + Clone + Debug;
+    type BatchedProof: Sync + Send + Serialize + DeserializeOwned;
     /// A hint that helps the prover compute an opening proof. Typically some byproduct of
     /// the commitment computation, e.g. for Dory the Pedersen commitments to the rows can be
     /// used as a hint for the opening proof.

@@ -1,7 +1,11 @@
+use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::{
     hash::{Hash, Hasher},
     ops::{Deref, DerefMut},
 };
+
+use crate::serialization::{deserialize, serialize};
 
 /// a flexible enum similar to `std::borrow::Cow`, but supports mutable slices as a variant
 ///
@@ -148,5 +152,31 @@ impl<'a, T: Hash> Hash for SmartSlice<'a, T> {
     /// hashes the contents
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.deref().hash(state)
+    }
+}
+
+impl<'a, T> Serialize for SmartSlice<'a, T>
+where
+    T: CanonicalSerialize,
+{
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serialize(&self.as_slice(), serializer)
+    }
+}
+
+impl<'de, 'a, T> Deserialize<'de> for SmartSlice<'a, T>
+where
+    T: ToOwned,
+    T: CanonicalDeserialize,
+{
+    /// deserializes into owned Vec<T>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserialize(deserializer).map(SmartSlice::Owned)
     }
 }
