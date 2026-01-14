@@ -3,17 +3,12 @@ use std::sync::{Arc, Mutex};
 use ark_bn254::{Fq, Fq2, Fr, G1Projective, G2Projective};
 use ark_ec::AffineRepr;
 use ark_ff::PrimeField;
-<<<<<<< HEAD
-use ec_gpu_gen::{G1AffineM, MultiexpKernel, program, rust_gpu_tools::Device, threadpool::Worker};
+
 use rayon::prelude::*;
-||||||| parent of 1a19569 (g2 also)
-use ec_gpu_gen::{G1AffineM, MultiexpKernel, program, rust_gpu_tools::Device, threadpool::Worker};
-=======
 use ec_gpu::arkworks_bn254::{G1Affine, G2Affine};
 use ec_gpu_gen::{
     program, rust_gpu_tools::Device, threadpool::Worker, G1AffineM, G2AffineM, MultiexpKernel,
 };
->>>>>>> 1a19569 (g2 also)
 
 pub static GPU_MSM_G1: std::sync::LazyLock<Mutex<GpuMsmG1>> =
     std::sync::LazyLock::new(|| Mutex::new(GpuMsmG1::new().expect("Failed to initialize GPU MSM")));
