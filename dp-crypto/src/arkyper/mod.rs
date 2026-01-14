@@ -644,12 +644,53 @@ mod tests {
 mod gpu_tests {
     use super::*;
     use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
-    use ark_bn254::{Bn254, Fr, G1Affine};
-    use ark_ec::CurveGroup;
+    use ark_bn254::{Bn254, Fr, G1Affine, G2Affine};
+    use ark_ec::{AffineRepr, CurveGroup};
     use ark_std::{UniformRand, rand::SeedableRng};
 
+    fn test_msm_gpu_vs_cpu_generic<A: AffineRepr<ScalarField = Fr>>(
+        bases: &[A],
+        poly: &DensePolynomial<Fr>,
+        ell: usize,
+    ) where
+        A::Group: CurveGroup<Affine = A>,
+    {
+        let cpu_result = msm::batch_poly_msm_cpu::<A>(bases, &[poly]).unwrap();
+        let gpu_result = msm::batch_poly_msm::<A>(bases, &[poly]).unwrap();
+
+        assert_eq!(cpu_result.len(), gpu_result.len());
+        for (cpu, gpu) in cpu_result.iter().zip(gpu_result.iter()) {
+            assert_eq!(
+                cpu.into_affine(),
+                gpu.into_affine(),
+                "MSM results differ for ell={ell}"
+            );
+        }
+    }
+
+    fn test_batch_msm_gpu_vs_cpu_generic<A: AffineRepr<ScalarField = Fr>>(
+        bases: &[A],
+        polys: &[DensePolynomial<Fr>],
+    ) where
+        A::Group: CurveGroup<Affine = A>,
+    {
+        let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
+
+        let cpu_results = msm::batch_poly_msm_cpu::<A>(bases, &poly_refs).unwrap();
+        let gpu_results = msm::batch_poly_msm::<A>(bases, &poly_refs).unwrap();
+
+        assert_eq!(cpu_results.len(), gpu_results.len());
+        for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
+            assert_eq!(
+                cpu.into_affine(),
+                gpu.into_affine(),
+                "Batch MSM results differ for poly {i}"
+            );
+        }
+    }
+
     #[test]
-    fn test_msm_gpu_vs_cpu() {
+    fn test_msm_gpu_vs_cpu_g1() {
         for ell in [10, 12, 14] {
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64);
             let n = 1 << ell;
@@ -660,18 +701,22 @@ mod gpu_tests {
             let srs = HyperKZGSRS::setup(&mut rng, n);
             let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
 
-            let cpu_result = msm::batch_poly_msm_cpu::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap();
-            let gpu_result =
-                msm::batch_poly_msm_gpu_bn254::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap();
+            test_msm_gpu_vs_cpu_generic::<G1Affine>(pk.g1_powers(), &poly, ell);
+        }
+    }
 
-            assert_eq!(cpu_result.len(), gpu_result.len());
-            for (cpu, gpu) in cpu_result.iter().zip(gpu_result.iter()) {
-                assert_eq!(
-                    cpu.into_affine(),
-                    gpu.into_affine(),
-                    "MSM results differ for ell={ell}"
-                );
-            }
+    #[test]
+    fn test_msm_gpu_vs_cpu_g2() {
+        for ell in [10, 12, 14] {
+            let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 1000);
+            let n = 1 << ell;
+
+            let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+            let poly = DensePolynomial::from(poly_raw);
+
+            let bases: Vec<G2Affine> = (0..n).map(|_| G2Affine::rand(&mut rng)).collect();
+
+            test_msm_gpu_vs_cpu_generic::<G2Affine>(&bases, &poly, ell);
         }
     }
 
@@ -727,7 +772,7 @@ mod gpu_tests {
     }
 
     #[test]
-    fn test_batch_msm_gpu_vs_cpu() {
+    fn test_batch_msm_gpu_vs_cpu_g1() {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
         let ell = 12;
         let n = 1 << ell;
@@ -743,19 +788,25 @@ mod gpu_tests {
         let srs = HyperKZGSRS::setup(&mut rng, n);
         let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
 
-        let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
+        test_batch_msm_gpu_vs_cpu_generic::<G1Affine>(pk.g1_powers(), &polys);
+    }
 
-        let cpu_results = msm::batch_poly_msm_cpu::<G1Affine>(pk.g1_powers(), &poly_refs).unwrap();
-        let gpu_results =
-            msm::batch_poly_msm_gpu_bn254::<G1Affine>(pk.g1_powers(), &poly_refs).unwrap();
+    #[test]
+    fn test_batch_msm_gpu_vs_cpu_g2() {
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(43);
+        let ell = 12;
+        let n = 1 << ell;
+        let num_polys = 5;
 
-        assert_eq!(cpu_results.len(), gpu_results.len());
-        for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
-            assert_eq!(
-                cpu.into_affine(),
-                gpu.into_affine(),
-                "Batch MSM results differ for poly {i}"
-            );
-        }
+        let polys: Vec<DensePolynomial<Fr>> = (0..num_polys)
+            .map(|_| {
+                let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+                DensePolynomial::from(poly_raw)
+            })
+            .collect();
+
+        let bases: Vec<G2Affine> = (0..n).map(|_| G2Affine::rand(&mut rng)).collect();
+
+        test_batch_msm_gpu_vs_cpu_generic::<G2Affine>(&bases, &polys);
     }
 }

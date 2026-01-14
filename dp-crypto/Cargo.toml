@@ -42,6 +42,7 @@ ec-gpu-gen = { workspace = true, optional = true }
 
 [build-dependencies]
 ec-gpu-gen = { workspace = true, optional = true }
+ec-gpu = { workspace = true, optional = true }
 ark-bn254 = { workspace = true }
 
 [features]

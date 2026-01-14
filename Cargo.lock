@@ -1203,7 +1203,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu"
 version = "0.2.0"
-source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fsmall_integer#8289aae219c6cc2d950179007f54a5ae587f60f1"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=fvs-ark-bn254-support#e12e8c3ac3833af81eb849ebc6e091435e65d9a5"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1215,7 +1215,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu-gen"
 version = "0.7.1"
-source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fsmall_integer#8289aae219c6cc2d950179007f54a5ae587f60f1"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=fvs-ark-bn254-support#e12e8c3ac3833af81eb849ebc6e091435e65d9a5"
 dependencies = [
  "ark-bn254",
  "ark-ec",
