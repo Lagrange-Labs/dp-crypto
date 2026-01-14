@@ -4,6 +4,7 @@ use ark_bn254::{Fq, Fr, G1Affine, G1Projective};
 use ark_ec::AffineRepr;
 use ark_ff::PrimeField;
 use ec_gpu_gen::{G1AffineM, MultiexpKernel, program, rust_gpu_tools::Device, threadpool::Worker};
+use rayon::prelude::*;
 
 pub static GPU_MSM: std::sync::LazyLock<Mutex<GpuMsm>> =
     std::sync::LazyLock::new(|| Mutex::new(GpuMsm::new().expect("Failed to initialize GPU MSM")));
@@ -118,9 +119,9 @@ fn g1_to_gpu(p: &G1Affine) -> G1AffineM {
 }
 
 pub fn convert_bases_to_gpu(bases: &[G1Affine]) -> Vec<G1AffineM> {
-    bases.iter().map(g1_to_gpu).collect()
+    bases.par_iter().map(g1_to_gpu).collect()
 }
 
 pub fn convert_scalars_to_bigint(scalars: &[Fr]) -> Vec<<Fr as PrimeField>::BigInt> {
-    scalars.iter().map(|s| s.into_bigint()).collect()
+    scalars.par_iter().map(|s| s.into_bigint()).collect()
 }
