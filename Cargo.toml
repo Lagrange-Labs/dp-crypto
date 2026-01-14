@@ -18,8 +18,8 @@ ark-ff = { version = "0.5.0", features = ["std"] }
 ark-bn254 = { version = "0.5.0", features = ["std"]}
 ark-ec = { version = "0.5.0", features = ["std"]}
 sumcheck_macro = { path = "sumcheck_macro" }
-ec-gpu = { git = "https://github.com/Lagrange-Labs/ec-gpu", branch = "fvs-ark-bn254-support", features = ["arkworks"] }
-ec-gpu-gen = { git = "https://github.com/Lagrange-Labs/ec-gpu", branch = "fvs-ark-bn254-support", features = ["arkworks"] }
+ec-gpu = { git = "https://github.com/Lagrange-Labs/ec-gpu", branch = "feat/small_integer", features = ["arkworks"] }
+ec-gpu-gen = { git = "https://github.com/Lagrange-Labs/ec-gpu", branch = "feat/small_integer", features = ["arkworks"] }
 
 
 [patch.crates-io]
