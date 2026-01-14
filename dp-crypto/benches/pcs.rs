@@ -1,5 +1,8 @@
+#[allow(unused_imports)]
 use ark_bn254::{Bn254, Fr};
+#[allow(unused_imports)]
 use ark_poly::DenseMultilinearExtension;
+#[allow(unused_imports)]
 use ark_poly_commit::multilinear_pc::MultilinearPC;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
@@ -7,6 +10,7 @@ use dp_crypto::{
     arkyper::{CommitmentScheme, HyperKZG},
     poly::{dense::DensePolynomial as ADensePolynomial, slice::SmartSlice},
 };
+#[allow(unused_imports)]
 use jolt_core::poly::{
     commitment::{
         commitment_scheme::CommitmentScheme as CScheme, hyperkzg::HyperKZG as JoltHyperKZG,
@@ -16,7 +20,6 @@ use jolt_core::poly::{
 };
 
 fn main() {
-    // Run registered benchmarks.
     divan::main();
 }
 
@@ -164,12 +167,17 @@ mod commit {
 mod open {
     use ark_bn254::Fr;
     use ark_ff::AdditiveGroup;
-    use dp_crypto::arkyper::transcript::Transcript;
     use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
+    use dp_crypto::arkyper::transcript::Transcript;
+    #[allow(unused_imports)]
     use jolt_core::field::JoltField;
+    #[allow(unused_imports)]
     use jolt_core::poly::dense_mlpoly::DensePolynomial as JoltDense;
+    #[allow(unused_imports)]
     use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial as JoltMLE;
+    #[allow(unused_imports)]
     use jolt_core::transcripts::Blake2bTranscript;
+    #[allow(unused_imports)]
     use jolt_core::transcripts::Transcript as T;
 
     use super::*;
@@ -386,15 +394,18 @@ mod open {
                 .map(|_| E::random(&mut thread_rng()))
                 .collect::<Vec<_>>();
             let transcript = T::new(b"basefold_bench");
-            let rmms = mles.iter().map(|mle| {
-                RowMajorMatrix::new_by_inner_matrix(
-                    p3::matrix::dense::DenseMatrix::new(
-                        transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
-                        1,
-                    ),
-                    witness::InstancePaddingStrategy::Default,
-                )
-            }).collect::<Vec<_>>();
+            let rmms = mles
+                .iter()
+                .map(|mle| {
+                    RowMajorMatrix::new_by_inner_matrix(
+                        p3::matrix::dense::DenseMatrix::new(
+                            transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                            1,
+                        ),
+                        witness::InstancePaddingStrategy::Default,
+                    )
+                })
+                .collect::<Vec<_>>();
             let commitment = Pcs::batch_commit(&pp, rmms).unwrap();
             let claims = mles
                 .iter()
@@ -403,12 +414,7 @@ mod open {
             (pp, claims, commitment, transcript)
         })
         .bench_local_values(|(pp, claims, commitment, mut prove_transcript)| {
-            Pcs::batch_open(
-                &pp,
-                vec![(&commitment, claims)],
-                &mut prove_transcript,
-            )
-            .unwrap()
+            Pcs::batch_open(&pp, vec![(&commitment, claims)], &mut prove_transcript).unwrap()
         });
     }
 
@@ -442,16 +448,19 @@ mod open {
                 .map(|_| E::random(&mut thread_rng()))
                 .collect::<Vec<_>>();
             let transcript = T::new(b"basefold_bench");
-            let comms = mles.iter().map(|mle| {
-                let rmm = RowMajorMatrix::new_by_inner_matrix(
-                    p3::matrix::dense::DenseMatrix::new(
-                        transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
-                        1,
-                    ),
-                    witness::InstancePaddingStrategy::Default,
-                );
-                Pcs::batch_commit(&pp, vec![rmm]).unwrap()
-            }).collect::<Vec<_>>();
+            let comms = mles
+                .iter()
+                .map(|mle| {
+                    let rmm = RowMajorMatrix::new_by_inner_matrix(
+                        p3::matrix::dense::DenseMatrix::new(
+                            transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                            1,
+                        ),
+                        witness::InstancePaddingStrategy::Default,
+                    );
+                    Pcs::batch_commit(&pp, vec![rmm]).unwrap()
+                })
+                .collect::<Vec<_>>();
             let claims = mles
                 .iter()
                 .map(|mle| vec![(point.clone(), vec![mle.evaluate(&point)])])

@@ -25,6 +25,8 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
+#[cfg(any(feature = "cuda", feature = "opencl"))]
+pub mod gpu_msm;
 pub mod interface;
 pub mod msm;
 pub mod transcript;
@@ -635,5 +637,176 @@ mod tests {
         let mut transcript = Blake3Transcript::new(b"batch_open");
 
         HyperKZG::verify(&vp, &comm, &opening_point, &eval, &proof, &mut transcript)
+    }
+}
+
+#[cfg(all(test, any(feature = "cuda", feature = "opencl")))]
+mod gpu_tests {
+    use super::*;
+    use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
+    use ark_bn254::{Bn254, Fr, G1Affine, G2Affine};
+    use ark_ec::{AffineRepr, CurveGroup};
+    use ark_std::{UniformRand, rand::SeedableRng};
+
+    fn test_msm_gpu_vs_cpu_generic<A: AffineRepr<ScalarField = Fr>>(
+        bases: &[A],
+        poly: &DensePolynomial<Fr>,
+        ell: usize,
+    ) where
+        A::Group: CurveGroup<Affine = A>,
+    {
+        let cpu_result = msm::batch_poly_msm_cpu::<A>(bases, &[poly]).unwrap();
+        let gpu_result = msm::batch_poly_msm::<A>(bases, &[poly]).unwrap();
+
+        assert_eq!(cpu_result.len(), gpu_result.len());
+        for (cpu, gpu) in cpu_result.iter().zip(gpu_result.iter()) {
+            assert_eq!(
+                cpu.into_affine(),
+                gpu.into_affine(),
+                "MSM results differ for ell={ell}"
+            );
+        }
+    }
+
+    fn test_batch_msm_gpu_vs_cpu_generic<A: AffineRepr<ScalarField = Fr>>(
+        bases: &[A],
+        polys: &[DensePolynomial<Fr>],
+    ) where
+        A::Group: CurveGroup<Affine = A>,
+    {
+        let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
+
+        let cpu_results = msm::batch_poly_msm_cpu::<A>(bases, &poly_refs).unwrap();
+        let gpu_results = msm::batch_poly_msm::<A>(bases, &poly_refs).unwrap();
+
+        assert_eq!(cpu_results.len(), gpu_results.len());
+        for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
+            assert_eq!(
+                cpu.into_affine(),
+                gpu.into_affine(),
+                "Batch MSM results differ for poly {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_msm_gpu_vs_cpu_g1() {
+        for ell in [10, 12, 14] {
+            let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64);
+            let n = 1 << ell;
+
+            let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+            let poly = DensePolynomial::from(poly_raw);
+
+            let srs = HyperKZGSRS::setup(&mut rng, n);
+            let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
+
+            test_msm_gpu_vs_cpu_generic::<G1Affine>(pk.g1_powers(), &poly, ell);
+        }
+    }
+
+    #[test]
+    fn test_msm_gpu_vs_cpu_g2() {
+        for ell in [10, 12, 14] {
+            let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 1000);
+            let n = 1 << ell;
+
+            let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+            let poly = DensePolynomial::from(poly_raw);
+
+            let bases: Vec<G2Affine> = (0..n).map(|_| G2Affine::rand(&mut rng)).collect();
+
+            test_msm_gpu_vs_cpu_generic::<G2Affine>(&bases, &poly, ell);
+        }
+    }
+
+    #[test]
+    fn test_commit_gpu_vs_cpu() {
+        for ell in [10, 12, 14] {
+            let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 100);
+            let n = 1 << ell;
+
+            let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+            let poly = DensePolynomial::from(poly_raw);
+
+            let srs = HyperKZGSRS::setup(&mut rng, n);
+            let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
+
+            let cpu_commit =
+                msm::batch_poly_msm_cpu::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap()[0];
+            let gpu_commit = HyperKZG::<Bn254>::commit(&pk, &poly).unwrap().0;
+
+            assert_eq!(
+                cpu_commit.into_affine(),
+                gpu_commit.0,
+                "Commit results differ for ell={ell}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_open_gpu_produces_valid_proof() {
+        for ell in [10, 12] {
+            let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 200);
+            let n = 1 << ell;
+
+            let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+            let poly = DensePolynomial::from(poly_raw);
+            let point = (0..ell)
+                .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
+                .collect::<Vec<_>>();
+            let eval = poly.evaluate(&point).unwrap();
+
+            let srs = HyperKZGSRS::setup(&mut rng, n);
+            let (pk, vk): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
+
+            let (comm, _) = HyperKZG::commit(&pk, &poly).unwrap();
+
+            let mut prover_transcript = Blake3Transcript::new(b"GpuTest");
+            let proof = HyperKZG::open(&pk, &poly, &point, &eval, &mut prover_transcript).unwrap();
+
+            let mut verifier_transcript = Blake3Transcript::new(b"GpuTest");
+            HyperKZG::verify(&vk, &comm, &point, &eval, &proof, &mut verifier_transcript)
+                .expect("GPU-generated proof should verify");
+        }
+    }
+
+    #[test]
+    fn test_batch_msm_gpu_vs_cpu_g1() {
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
+        let ell = 12;
+        let n = 1 << ell;
+        let num_polys = 5;
+
+        let polys: Vec<DensePolynomial<Fr>> = (0..num_polys)
+            .map(|_| {
+                let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+                DensePolynomial::from(poly_raw)
+            })
+            .collect();
+
+        let srs = HyperKZGSRS::setup(&mut rng, n);
+        let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
+
+        test_batch_msm_gpu_vs_cpu_generic::<G1Affine>(pk.g1_powers(), &polys);
+    }
+
+    #[test]
+    fn test_batch_msm_gpu_vs_cpu_g2() {
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(43);
+        let ell = 12;
+        let n = 1 << ell;
+        let num_polys = 5;
+
+        let polys: Vec<DensePolynomial<Fr>> = (0..num_polys)
+            .map(|_| {
+                let poly_raw = (0..n).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+                DensePolynomial::from(poly_raw)
+            })
+            .collect();
+
+        let bases: Vec<G2Affine> = (0..n).map(|_| G2Affine::rand(&mut rng)).collect();
+
+        test_batch_msm_gpu_vs_cpu_generic::<G2Affine>(&bases, &polys);
     }
 }

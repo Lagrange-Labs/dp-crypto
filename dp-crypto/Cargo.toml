@@ -6,7 +6,7 @@ edition.workspace = true
 [dependencies]
 ark-bn254.workspace = true
 ark-std.workspace = true
-ark-ec = { version = "0.5.0", features = ["std"]}
+ark-ec.workspace = true
 ark-ff.workspace = true
 ark-poly = { version = "0.5.0", features = ["std"]}
 anyhow = "^1.0"
@@ -37,6 +37,13 @@ expander-arith = { git = "https://github.com/nicholas-mainardi/Expander.git", br
 expander-poly = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "polynomials", optional = true }
 expander-hasher = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "gkr_hashers", optional = true }
 expander-sumcheck = { git = "https://github.com/nicholas-mainardi/Expander.git", branch = "feat/make_mpi_dependency_optional", package = "sumcheck_generic", optional = true }
+ec-gpu = { workspace = true, optional = true }
+ec-gpu-gen = { workspace = true, optional = true }
+
+[build-dependencies]
+ec-gpu-gen = { workspace = true, optional = true }
+ec-gpu = { workspace = true, optional = true }
+ark-bn254 = { workspace = true }
 
 [features]
 default = ["mono"]
@@ -51,6 +58,8 @@ nightly-benches = ["parallel", "dep:sumcheck", "dep:multilinear_extensions", "de
 all-stable = ["mono", "parallel"]
 asm = ["ark-ff/asm"]
 mono = []
+cuda = ["dep:ec-gpu", "dep:ec-gpu-gen", "ec-gpu-gen/cuda"]
+opencl = ["dep:ec-gpu", "dep:ec-gpu-gen", "ec-gpu-gen/opencl"]
 
 [dev-dependencies]
 criterion = { version = "0.7.0", features = ["html_reports"]}
@@ -82,5 +91,3 @@ harness = false
 [[bench]]
 name = "pcs"
 harness = false
-
-

@@ -1,0 +1,37 @@
+name: "GPU testing with ec-gpu"
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+      - ready_for_review
+
+concurrency:
+  group: gpu-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: "Test ec-gpu"
+    runs-on: ['gpu']
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/bin/
+          ~/.cargo/registry/index/
+          ~/.cargo/registry/cache/
+          ~/.cargo/git/db/
+          target/
+        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-
+    - name: Run tests on features 'parallel,cuda'
+      run: cargo test --features='parallel,cuda'
