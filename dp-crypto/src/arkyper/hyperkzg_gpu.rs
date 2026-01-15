@@ -30,7 +30,7 @@ use ec_gpu_gen::{program, rust_gpu_tools::Device, PolyOpsKernel};
 ///
 /// This struct provides GPU-accelerated versions of commit and open operations
 /// that can be directly compared with the CPU implementation.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct HyperKZGGpu<P: Pairing> {
     _phantom: PhantomData<P>,
 }
