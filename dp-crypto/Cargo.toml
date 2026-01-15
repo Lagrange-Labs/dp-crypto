@@ -91,3 +91,7 @@ harness = false
 [[bench]]
 name = "pcs"
 harness = false
+
+[[example]]
+name = "hyperkzg_gpu"
+required-features = ["cuda"]

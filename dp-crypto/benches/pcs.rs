@@ -10,6 +10,8 @@ use dp_crypto::{
     arkyper::{CommitmentScheme, HyperKZG},
     poly::{dense::DensePolynomial as ADensePolynomial, slice::SmartSlice},
 };
+#[cfg(feature = "cuda")]
+use dp_crypto::arkyper::HyperKZGGpu;
 #[allow(unused_imports)]
 use jolt_core::poly::{
     commitment::{
@@ -58,6 +60,33 @@ mod commit {
         })
         .bench_local_values(|(polys, (pp, _))| {
             HyperKZG::<Bn254>::batch_commit(&pp, &polys).unwrap()
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_commit(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
+            (evals, HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n))
+        })
+        .bench_local_values(|(s, (pp, _))| {
+            let poly = ADensePolynomial::new(s);
+            HyperKZGGpu::<Bn254>::commit(&pp, &poly)
+        })
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_batch_commit<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let polys = (0..NUM_BATCHED_POLYS)
+                .map(|_| ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize)))
+                .collect::<Vec<_>>();
+            (polys, HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n))
+        })
+        .bench_local_values(|(polys, (pp, _))| {
+            HyperKZGGpu::<Bn254>::batch_commit(&pp, &polys).unwrap()
         })
     }
 
@@ -222,6 +251,51 @@ mod open {
                 &challenges,
             );
             HyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut prove_transcript).unwrap()
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_open(b: Bencher, n: usize) {
+        use dp_crypto::arkyper::HyperKZGGpu;
+
+        b.with_inputs(|| {
+            let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
+            let (pp, _) = HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n);
+            let poly = ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals));
+            let r_len = poly.num_vars();
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            let transcript = Blake3Transcript::new(b"hyperkzg_test");
+            (pp, poly, point, transcript)
+        })
+        .bench_local_values(|(pp, poly, point, mut prove_transcript)| {
+            HyperKZGGpu::<Bn254>::prove(&pp, &poly, &point, None, &mut prove_transcript)
+        })
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_batch_open<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        use dp_crypto::arkyper::HyperKZGGpu;
+
+        b.with_inputs(|| {
+            let polys = (0..NUM_BATCHED_POLYS)
+                .map(|_| ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize)))
+                .collect::<Vec<_>>();
+            let (pp, _) = HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n);
+            let point = (0..n).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            let transcript = Blake3Transcript::new(b"hyperkzg_test");
+            (pp, polys, point, transcript)
+        })
+        .bench_local_values(|(pp, polys, point, mut prove_transcript)| {
+            let challenges = (0..polys.len())
+                .map(|_| prove_transcript.challenge_scalar())
+                .collect::<Vec<_>>();
+            let poly = ADensePolynomial::linear_combination(
+                &polys.iter().collect::<Vec<_>>(),
+                &challenges,
+            );
+            HyperKZGGpu::<Bn254>::prove(&pp, &poly, &point, None, &mut prove_transcript).unwrap()
         })
     }
 
