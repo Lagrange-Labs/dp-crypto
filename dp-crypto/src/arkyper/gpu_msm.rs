@@ -40,12 +40,10 @@ impl GpuMsm {
             .collect::<Result<_, _>>()
             .map_err(|e| anyhow::anyhow!("Failed to create GPU program for poly_ops: {e}"))?;
 
-        let device_refs: Vec<&Device> = devices.iter().collect();
-
-        let kernel = MultiexpKernel::create(msm_programs, &device_refs)
+        let kernel = MultiexpKernel::create(msm_programs, &devices)
             .map_err(|e| anyhow::anyhow!("Failed to create MSM kernel: {e}"))?;
 
-        let poly_ops = PolyOpsKernel::create(poly_ops_programs, &device_refs)
+        let poly_ops = PolyOpsKernel::create(poly_ops_programs, &devices)
             .map_err(|e| anyhow::anyhow!("Failed to create poly_ops kernel: {e}"))?;
 
         let pool = Worker::new();

@@ -73,9 +73,7 @@ impl GpuPolyOpsHolder {
                 .collect::<Result<_, _>>()
                 .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
 
-            let device_refs: Vec<&Device> = devices.iter().collect();
-
-            let poly_ops = PolyOpsKernel::create(programs, &device_refs)
+            let poly_ops = PolyOpsKernel::create(programs, &devices)
                 .map_err(|e| anyhow::anyhow!("Failed to create poly_ops kernel: {e}"))?;
 
             self.poly_ops = Some(poly_ops);
