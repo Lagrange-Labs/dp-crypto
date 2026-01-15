@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex};
 use ark_bn254::{Fq, Fr, G1Affine, G1Projective};
 use ark_ec::AffineRepr;
 use ark_ff::PrimeField;
-use ec_gpu_gen::{G1AffineM, MultiexpKernel, program, rust_gpu_tools::Device, threadpool::Worker};
+use ec_gpu_gen::{
+    program, rust_gpu_tools::Device, threadpool::Worker, G1AffineM, MultiexpKernel,
+    PolyOpsKernel,
+};
 use rayon::prelude::*;
 
 pub static GPU_MSM: std::sync::LazyLock<Mutex<GpuMsm>> =
@@ -11,6 +14,7 @@ pub static GPU_MSM: std::sync::LazyLock<Mutex<GpuMsm>> =
 
 pub struct GpuMsm {
     kernel: MultiexpKernel<'static, G1Affine>,
+    poly_ops: PolyOpsKernel<Fr>,
     pool: Worker,
 }
 
@@ -21,18 +25,35 @@ impl GpuMsm {
             return Err(anyhow::anyhow!("No GPU devices found"));
         }
 
-        let programs: Vec<_> = devices
+        // Create programs for MSM kernel
+        let msm_programs: Vec<_> = devices
             .iter()
             .map(|device| program!(device))
             .collect::<Result<_, _>>()
-            .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create GPU program for MSM: {e}"))?;
 
-        let kernel = MultiexpKernel::create(programs, &devices)
+        // Create programs for poly_ops kernel
+        let poly_ops_programs: Vec<_> = devices
+            .iter()
+            .map(|device| program!(device))
+            .collect::<Result<_, _>>()
+            .map_err(|e| anyhow::anyhow!("Failed to create GPU program for poly_ops: {e}"))?;
+
+        let device_refs: Vec<_> = devices.iter().collect();
+
+        let kernel = MultiexpKernel::create(msm_programs, &devices)
             .map_err(|e| anyhow::anyhow!("Failed to create MSM kernel: {e}"))?;
+
+        let poly_ops = PolyOpsKernel::create(poly_ops_programs, &device_refs)
+            .map_err(|e| anyhow::anyhow!("Failed to create poly_ops kernel: {e}"))?;
 
         let pool = Worker::new();
 
-        Ok(Self { kernel, pool })
+        Ok(Self {
+            kernel,
+            poly_ops,
+            pool,
+        })
     }
 
     pub fn new_single_device(device_index: usize) -> anyhow::Result<Self> {
@@ -49,15 +70,24 @@ impl GpuMsm {
         }
 
         let device = &devices[device_index];
-        let program =
-            program!(device).map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
+        let msm_program =
+            program!(device).map_err(|e| anyhow::anyhow!("Failed to create GPU program for MSM: {e}"))?;
+        let poly_ops_program =
+            program!(device).map_err(|e| anyhow::anyhow!("Failed to create GPU program for poly_ops: {e}"))?;
 
-        let kernel = MultiexpKernel::create(vec![program], std::slice::from_ref(device))
+        let kernel = MultiexpKernel::create(vec![msm_program], std::slice::from_ref(device))
             .map_err(|e| anyhow::anyhow!("Failed to create MSM kernel: {e}"))?;
+
+        let poly_ops = PolyOpsKernel::create(vec![poly_ops_program], &[device])
+            .map_err(|e| anyhow::anyhow!("Failed to create poly_ops kernel: {e}"))?;
 
         let pool = Worker::new();
 
-        Ok(Self { kernel, pool })
+        Ok(Self {
+            kernel,
+            poly_ops,
+            pool,
+        })
     }
 
     pub fn msm(&mut self, bases: &[G1Affine], scalars: &[Fr]) -> anyhow::Result<G1Projective> {
@@ -88,6 +118,47 @@ impl GpuMsm {
         self.kernel
             .multiexp(&self.pool, bases, scalars, 0)
             .map_err(|e| anyhow::anyhow!("GPU MSM failed: {e}"))
+    }
+
+    /// Fix the lowest variable of a multilinear polynomial on GPU.
+    ///
+    /// Given a polynomial in evaluation form of length 2n, computes a new polynomial
+    /// of length n by fixing the lowest variable to value `r`.
+    ///
+    /// Formula: `out[j] = r * (poly[2j+1] - poly[2j]) + poly[2j]`
+    pub fn fix_var(&self, poly: &[Fr], r: &Fr) -> anyhow::Result<Vec<Fr>> {
+        self.poly_ops
+            .fix_var(poly, r)
+            .map_err(|e| anyhow::anyhow!("GPU fix_var failed: {e}"))
+    }
+
+    /// Fix multiple variables iteratively on GPU.
+    ///
+    /// Starting from a polynomial of length 2^k, fixes k variables to the given
+    /// challenge values, returning the final constant value.
+    pub fn fix_vars(&self, poly: &[Fr], challenges: &[Fr]) -> anyhow::Result<Fr> {
+        self.poly_ops
+            .fix_vars(poly, challenges)
+            .map_err(|e| anyhow::anyhow!("GPU fix_vars failed: {e}"))
+    }
+
+    /// Linear combination of polynomials on GPU: out = sum(coeffs[i] * polys[i])
+    ///
+    /// All polynomials must have the same length.
+    pub fn linear_combine(&self, polys: &[&[Fr]], coeffs: &[Fr]) -> anyhow::Result<Vec<Fr>> {
+        self.poly_ops
+            .linear_combine(polys, coeffs)
+            .map_err(|e| anyhow::anyhow!("GPU linear_combine failed: {e}"))
+    }
+
+    /// Compute witness polynomial for KZG opening on GPU.
+    ///
+    /// Given f(x) and evaluation point u, computes h(x) where:
+    /// f(x) = h(x) * (x - u) + f(u)
+    pub fn witness_poly(&self, f: &[Fr], u: &Fr) -> anyhow::Result<Vec<Fr>> {
+        self.poly_ops
+            .witness_poly(f, u)
+            .map_err(|e| anyhow::anyhow!("GPU witness_poly failed: {e}"))
     }
 }
 
