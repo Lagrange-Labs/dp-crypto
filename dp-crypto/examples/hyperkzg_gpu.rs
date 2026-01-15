@@ -139,24 +139,24 @@ fn main() -> anyhow::Result<()> {
     let start = Instant::now();
     HyperKZG::<Bn254>::verify(
         &vk,
-        &cpu_proof,
-        &mut verify_transcript,
+        &cpu_commitment,
         &point,
         &eval,
-        &cpu_commitment,
+        &cpu_proof,
+        &mut verify_transcript,
     )?;
     println!("  CPU proof verified in {:?}", start.elapsed());
 
     // Verify GPU proof
     let mut verify_transcript = Blake3Transcript::new(b"example");
     let start = Instant::now();
-    HyperKZGGpu::<Bn254>::verify(
+    HyperKZG::<Bn254>::verify(
         &vk,
-        &gpu_proof,
-        &mut verify_transcript,
+        &gpu_commitment,
         &point,
         &eval,
-        &gpu_commitment,
+        &gpu_proof,
+        &mut verify_transcript,
     )?;
     println!("  GPU proof verified in {:?}", start.elapsed());
 
