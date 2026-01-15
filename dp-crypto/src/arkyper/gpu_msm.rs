@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 use ark_bn254::{Fq, Fr, G1Affine, G1Projective};
 use ark_ec::AffineRepr;
 use ark_ff::PrimeField;
+use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
 use ec_gpu_gen::{
     program, rust_gpu_tools::Device, threadpool::Worker, G1AffineM, MultiexpKernel,
     PolyOpsKernel,
@@ -13,7 +14,7 @@ pub static GPU_MSM: std::sync::LazyLock<Mutex<GpuMsm>> =
     std::sync::LazyLock::new(|| Mutex::new(GpuMsm::new().expect("Failed to initialize GPU MSM")));
 
 pub struct GpuMsm {
-    kernel: MultiexpKernel<'static, G1Affine>,
+    kernel: MultiexpKernel<'static, GpuG1Affine>,
     poly_ops: PolyOpsKernel<Fr>,
     pool: Worker,
 }
@@ -39,9 +40,9 @@ impl GpuMsm {
             .collect::<Result<_, _>>()
             .map_err(|e| anyhow::anyhow!("Failed to create GPU program for poly_ops: {e}"))?;
 
-        let device_refs: Vec<_> = devices.iter().collect();
+        let device_refs: Vec<&Device> = devices.iter().collect();
 
-        let kernel = MultiexpKernel::create(msm_programs, &devices)
+        let kernel = MultiexpKernel::create(msm_programs, &device_refs)
             .map_err(|e| anyhow::anyhow!("Failed to create MSM kernel: {e}"))?;
 
         let poly_ops = PolyOpsKernel::create(poly_ops_programs, &device_refs)

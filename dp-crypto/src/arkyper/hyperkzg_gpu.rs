@@ -13,14 +13,11 @@ use std::borrow::Borrow;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
-use ark_bn254::{Bn254, Fq, Fr, G1Affine, G1Projective, G2Affine};
-use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, VariableBaseMSM};
-use ark_ff::PrimeField;
-use ark_std::{cfg_iter, One, Zero};
-use rayon::prelude::*;
+use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
+use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
 
 use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
-use super::transcript::{AppendToTranscript, Transcript};
+use super::transcript::Transcript;
 use super::{
     kzg_open_batch, HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGVerifierKey,
     HyperKZGSRS,
@@ -76,7 +73,7 @@ impl GpuPolyOpsHolder {
                 .collect::<Result<_, _>>()
                 .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
 
-            let device_refs: Vec<_> = devices.iter().collect();
+            let device_refs: Vec<&Device> = devices.iter().collect();
 
             let poly_ops = PolyOpsKernel::create(programs, &device_refs)
                 .map_err(|e| anyhow::anyhow!("Failed to create poly_ops kernel: {e}"))?;
@@ -381,7 +378,8 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         coeffs: &[Self::Field],
     ) -> anyhow::Result<Self::Commitment> {
         let points: Vec<G1Affine> = commitments.iter().map(|c| c.borrow().0).collect();
-        let result = G1Projective::msm(&points, coeffs)?;
+        let result = G1Projective::msm(&points, coeffs)
+            .map_err(|e| anyhow::anyhow!("MSM failed with length mismatch: {e}"))?;
         Ok(HyperKZGCommitment(result.into_affine()))
     }
 
