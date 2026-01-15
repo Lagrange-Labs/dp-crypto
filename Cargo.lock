@@ -1200,6 +1200,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu"
 version = "0.2.0"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu#a0e6ccf4d3c858455d18dd4c5216fe95121b026d"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1211,6 +1212,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu-gen"
 version = "0.7.1"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu#a0e6ccf4d3c858455d18dd4c5216fe95121b026d"
 dependencies = [
  "ark-bn254",
  "ark-ec",
