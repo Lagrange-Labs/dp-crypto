@@ -25,7 +25,7 @@ fn main() {
     divan::main();
 }
 
-const LENS: [usize; 3] = [12, 14, 16];
+const LENS: [usize; 4] = [16, 18, 20, 23];
 
 const NUM_BATCHED_POLYS: [usize; 2] = [3, 5];
 
