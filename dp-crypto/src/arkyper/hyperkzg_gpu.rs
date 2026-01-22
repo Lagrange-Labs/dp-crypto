@@ -259,21 +259,27 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
     // Step 5: GPU MSM for witness commitments
     // Each witness polynomial needs to be committed using G1 powers
     let g1_powers = pk.g1_powers();
-    let witness_len = witness_polys[0].len();
+    let b_poly_len = b_poly.len();
 
-    anyhow::ensure!(
-        witness_len <= g1_powers.len(),
-        "Witness polynomial length {} exceeds G1 powers length {}",
-        witness_len,
-        g1_powers.len()
-    );
-
-    // Convert witness polys to DensePolynomial for batch commit
+    // GPU witness returns n-1 coefficients, but we need to pad to n (power of 2)
+    // to match CPU behavior and satisfy DensePolynomial requirements
     let witness_dense: Vec<DensePolynomial<Fr>> = witness_polys
         .into_iter()
-        .map(DensePolynomial::new)
+        .map(|mut w| {
+            // Pad with trailing zero to make length equal to b_poly_len (power of 2)
+            w.push(Fr::ZERO);
+            debug_assert_eq!(w.len(), b_poly_len);
+            DensePolynomial::new(w)
+        })
         .collect();
     let witness_refs: Vec<&DensePolynomial<Fr>> = witness_dense.iter().collect();
+
+    anyhow::ensure!(
+        b_poly_len <= g1_powers.len(),
+        "Witness polynomial length {} exceeds G1 powers length {}",
+        b_poly_len,
+        g1_powers.len()
+    );
 
     // GPU MSM for all witness polynomials
     let w_projective = gpu_batch_commit(g1_powers, &witness_refs)?;
