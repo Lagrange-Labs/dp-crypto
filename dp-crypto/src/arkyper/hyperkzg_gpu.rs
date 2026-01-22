@@ -333,12 +333,12 @@ pub fn cpu_batch_commit(
 /// Cached polynomial data for a GPU session.
 #[derive(Clone)]
 pub struct CachedPolynomial {
-    /// The polynomial data (owned).
-    pub poly: DensePolynomial<'static, Fr>,
+    /// The polynomial evaluations (owned).
+    pub evals: Vec<Fr>,
     /// Pre-computed commitment (if available).
     pub commitment: Option<HyperKZGCommitment<Bn254>>,
-    /// Pre-computed intermediate polynomials from fix_var (if available).
-    pub intermediates: Option<Vec<DensePolynomial<'static, Fr>>>,
+    /// Pre-computed intermediate polynomial evaluations from fix_var (if available).
+    pub intermediates: Option<Vec<Vec<Fr>>>,
 }
 
 /// GPU session that keeps polynomial data cached for efficient commit→open flow.
@@ -406,9 +406,9 @@ impl HyperKZGGpuSession {
         let results = gpu_batch_commit(pk.g1_powers(), &[poly])?;
         let commitment = HyperKZGCommitment(results[0].into_affine());
 
-        // Cache the polynomial and commitment
+        // Cache the polynomial evaluations and commitment
         self.cached_poly = Some(CachedPolynomial {
-            poly: poly.clone(),
+            evals: poly.evals_ref().to_vec(),
             commitment: Some(commitment.clone()),
             intermediates: None,
         });
@@ -431,8 +431,11 @@ impl HyperKZGGpuSession {
             anyhow::anyhow!("No cached polynomial. Call commit_with_cache first.")
         })?;
 
+        // Recreate DensePolynomial from cached evaluations
+        let poly = DensePolynomial::new(cached.evals.clone());
+
         // Use the cached polynomial for open
-        HyperKZGGpu::<Bn254>::open_gpu(pk, &cached.poly, point, eval, transcript)
+        HyperKZGGpu::<Bn254>::open_gpu(pk, &poly, point, eval, transcript)
     }
 
     /// Combined commit and open in a single operation.
@@ -490,11 +493,11 @@ impl HyperKZGGpuSession {
         // Phase 3: KZG batch open using GPU
         let (w, v) = kzg_open_batch_gpu(&polys, &u, pk, transcript)?;
 
-        // Cache the polynomial and its data
+        // Cache the polynomial evaluations and intermediate evaluations
         self.cached_poly = Some(CachedPolynomial {
-            poly: poly.clone(),
+            evals: poly.evals_ref().to_vec(),
             commitment: Some(poly_commitment.clone()),
-            intermediates: Some(polys),
+            intermediates: Some(polys.iter().map(|p| p.evals_ref().to_vec()).collect()),
         });
 
         let proof = HyperKZGProof {
