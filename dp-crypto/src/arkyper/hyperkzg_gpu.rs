@@ -227,8 +227,8 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
     pk: &HyperKZGProverKey<Bn254>,
     transcript: &mut T,
 ) -> anyhow::Result<(Vec<G1Affine>, Vec<Vec<Fr>>)> {
-    let k = f.len(); // Number of polynomials
-    let t = u.len(); // Number of evaluation points (3 for HyperKZG)
+    let _k = f.len(); // Number of polynomials
+    let _t = u.len(); // Number of evaluation points (3 for HyperKZG)
 
     // Step 1: GPU batch evaluation of all polynomials at all points
     // Collect polynomial coefficients as slices
@@ -333,12 +333,12 @@ pub fn cpu_batch_commit(
 /// Cached polynomial data for a GPU session.
 #[derive(Clone)]
 pub struct CachedPolynomial {
-    /// The polynomial data.
-    pub poly: DensePolynomial<Fr>,
+    /// The polynomial data (owned).
+    pub poly: DensePolynomial<'static, Fr>,
     /// Pre-computed commitment (if available).
     pub commitment: Option<HyperKZGCommitment<Bn254>>,
     /// Pre-computed intermediate polynomials from fix_var (if available).
-    pub intermediates: Option<Vec<DensePolynomial<Fr>>>,
+    pub intermediates: Option<Vec<DensePolynomial<'static, Fr>>>,
 }
 
 /// GPU session that keeps polynomial data cached for efficient commit→open flow.
@@ -510,7 +510,10 @@ impl HyperKZGGpuSession {
     ///
     /// This is useful when you need to commit to multiple polynomials and open them
     /// at the same point. All operations are batched for efficiency.
-    pub fn batch_commit_and_open<T: Transcript>(
+    ///
+    /// Note: Each proof uses a fresh clone of the transcript to ensure independent
+    /// Fiat-Shamir challenges.
+    pub fn batch_commit_and_open<T: Transcript + Clone>(
         &mut self,
         pk: &HyperKZGProverKey<Bn254>,
         polys: &[DensePolynomial<Fr>],
@@ -738,6 +741,7 @@ mod tests {
     use crate::arkyper::transcript::blake3::Blake3Transcript;
     use crate::arkyper::HyperKZG;
     use crate::poly::challenge;
+    use ark_ff::AdditiveGroup;
     use ark_std::rand::SeedableRng;
     use ark_std::UniformRand;
 
@@ -1062,7 +1066,6 @@ mod tests {
     /// Test that GPU eval_univariate_batch matches CPU evaluation.
     #[test]
     fn test_eval_univariate_batch_gpu_vs_cpu() {
-        use ark_ff::Zero;
 
         if Device::all().is_empty() {
             println!("No GPU available, skipping test");
