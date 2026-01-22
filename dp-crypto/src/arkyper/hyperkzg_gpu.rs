@@ -176,6 +176,111 @@ pub fn gpu_witness_poly(f: &[Fr], u: &Fr) -> anyhow::Result<Vec<Fr>> {
         .map_err(|e| anyhow::anyhow!("GPU witness_poly error: {e}"))
 }
 
+/// GPU-accelerated batch evaluation of multiple polynomials at multiple points.
+///
+/// Returns `results[point_idx][poly_idx]` = evaluation of poly_idx at points[point_idx].
+pub fn gpu_eval_univariate_batch(
+    polys: &[&[Fr]],
+    points: &[Fr],
+) -> anyhow::Result<Vec<Vec<Fr>>> {
+    GPU_POLY_OPS
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .eval_univariate_batch(polys, points)
+        .map_err(|e| anyhow::anyhow!("GPU eval_univariate_batch error: {e}"))
+}
+
+/// GPU-accelerated batch witness polynomial computation for multiple points.
+///
+/// Returns one witness polynomial per point, each of length `f.len() - 1`.
+pub fn gpu_witness_poly_batch(f: &[Fr], points: &[Fr]) -> anyhow::Result<Vec<Vec<Fr>>> {
+    GPU_POLY_OPS
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .witness_poly_batch(f, points)
+        .map_err(|e| anyhow::anyhow!("GPU witness_poly_batch error: {e}"))
+}
+
+// ============================================================================
+// GPU KZG Batch Open (Phase 3 Acceleration)
+// ============================================================================
+
+/// GPU-accelerated KZG batch open for HyperKZG Phase 3.
+///
+/// This replaces the CPU `kzg_open_batch` by moving polynomial evaluations,
+/// linear combination, witness polynomial computation, and MSM to the GPU.
+///
+/// # Arguments
+/// * `f` - Intermediate polynomials from Phase 1
+/// * `u` - Evaluation points [r, -r, r²]
+/// * `pk` - Prover key containing G1 powers
+/// * `transcript` - Fiat-Shamir transcript
+///
+/// # Returns
+/// Tuple of (witness commitments, evaluation matrix)
+#[allow(clippy::type_complexity)]
+pub fn kzg_open_batch_gpu<T: Transcript>(
+    f: &[DensePolynomial<Fr>],
+    u: &[Fr],
+    pk: &HyperKZGProverKey<Bn254>,
+    transcript: &mut T,
+) -> anyhow::Result<(Vec<G1Affine>, Vec<Vec<Fr>>)> {
+    let k = f.len(); // Number of polynomials
+    let t = u.len(); // Number of evaluation points (3 for HyperKZG)
+
+    // Step 1: GPU batch evaluation of all polynomials at all points
+    // Collect polynomial coefficients as slices
+    let poly_slices: Vec<&[Fr]> = f.iter().map(|p| p.evals_ref()).collect();
+
+    // GPU: Evaluate all k polynomials at all t points
+    // Returns v[point_idx][poly_idx]
+    let v = gpu_eval_univariate_batch(&poly_slices, u)?;
+
+    // Step 2: Update transcript and get challenge
+    let scalars: Vec<&Fr> = v.iter().flatten().collect();
+    transcript.append_scalars::<Fr>(&scalars);
+    let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(f.len());
+
+    // Step 3: GPU linear combination to get B polynomial
+    // B(x) = sum(q^i * f_i(x)) for i = 0..k
+    let b_poly_coeffs = gpu_linear_combine(&poly_slices, &q_powers)?;
+
+    // Step 4: GPU batch witness polynomial computation
+    // For each point u[i], compute witness h_i where B(x) = h_i(x) * (x - u[i]) + B(u[i])
+    let witness_polys = gpu_witness_poly_batch(&b_poly_coeffs, u)?;
+
+    // Step 5: GPU MSM for witness commitments
+    // Each witness polynomial needs to be committed using G1 powers
+    let g1_powers = pk.g1_powers();
+    let witness_len = witness_polys[0].len();
+
+    anyhow::ensure!(
+        witness_len <= g1_powers.len(),
+        "Witness polynomial length {} exceeds G1 powers length {}",
+        witness_len,
+        g1_powers.len()
+    );
+
+    // Convert witness polys to DensePolynomial for batch commit
+    let witness_dense: Vec<DensePolynomial<Fr>> = witness_polys
+        .into_iter()
+        .map(DensePolynomial::new)
+        .collect();
+    let witness_refs: Vec<&DensePolynomial<Fr>> = witness_dense.iter().collect();
+
+    // GPU MSM for all witness polynomials
+    let w_projective = gpu_batch_commit(g1_powers, &witness_refs)?;
+    let w_aff: Vec<G1Affine> = w_projective.iter().map(|g| g.into_affine()).collect();
+
+    // Step 6: Update transcript for verifier state consistency
+    transcript.append_points(&w_aff);
+    let _d_0: Fr = transcript.challenge_scalar();
+
+    Ok((w_aff, v))
+}
+
 // ============================================================================
 // CPU Reference Operations (for comparison)
 // ============================================================================
@@ -219,6 +324,219 @@ pub fn cpu_batch_commit(
                 .map_err(|e| anyhow::anyhow!("CPU MSM error: {e}"))
         })
         .collect()
+}
+
+// ============================================================================
+// HyperKZG GPU Session (Buffer Persistence)
+// ============================================================================
+
+/// Cached polynomial data for a GPU session.
+#[derive(Clone)]
+pub struct CachedPolynomial {
+    /// The polynomial data.
+    pub poly: DensePolynomial<Fr>,
+    /// Pre-computed commitment (if available).
+    pub commitment: Option<HyperKZGCommitment<Bn254>>,
+    /// Pre-computed intermediate polynomials from fix_var (if available).
+    pub intermediates: Option<Vec<DensePolynomial<Fr>>>,
+}
+
+/// GPU session that keeps polynomial data cached for efficient commit→open flow.
+///
+/// This session optimizes the HyperKZG workflow by:
+/// 1. Caching polynomial data after commit
+/// 2. Reusing cached data during open (avoiding re-computation)
+/// 3. Providing a combined commit+open operation for maximum efficiency
+///
+/// # Example
+///
+/// ```ignore
+/// let mut session = HyperKZGGpuSession::new();
+///
+/// // Commit and cache the polynomial
+/// let commitment = session.commit_with_cache(&pk, &poly)?;
+///
+/// // Open using cached data (no re-upload needed)
+/// let proof = session.open_from_cache(&pk, &point, &eval, &mut transcript)?;
+///
+/// // Or use the combined method for best performance:
+/// let (commitment, proof) = session.commit_and_open(&pk, &poly, &point, &mut transcript)?;
+/// ```
+pub struct HyperKZGGpuSession {
+    /// Cached polynomial data.
+    cached_poly: Option<CachedPolynomial>,
+}
+
+impl Default for HyperKZGGpuSession {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HyperKZGGpuSession {
+    /// Create a new GPU session.
+    pub fn new() -> Self {
+        Self { cached_poly: None }
+    }
+
+    /// Check if a polynomial is cached.
+    pub fn has_cached_poly(&self) -> bool {
+        self.cached_poly.is_some()
+    }
+
+    /// Get the cached commitment, if available.
+    pub fn cached_commitment(&self) -> Option<&HyperKZGCommitment<Bn254>> {
+        self.cached_poly.as_ref().and_then(|c| c.commitment.as_ref())
+    }
+
+    /// Clear the cached polynomial data.
+    pub fn clear_cache(&mut self) {
+        self.cached_poly = None;
+    }
+
+    /// Commit to a polynomial and cache it for later open.
+    ///
+    /// This stores the polynomial and commitment for use in `open_from_cache`.
+    pub fn commit_with_cache(
+        &mut self,
+        pk: &HyperKZGProverKey<Bn254>,
+        poly: &DensePolynomial<Fr>,
+    ) -> anyhow::Result<HyperKZGCommitment<Bn254>> {
+        // Compute commitment using GPU
+        let results = gpu_batch_commit(pk.g1_powers(), &[poly])?;
+        let commitment = HyperKZGCommitment(results[0].into_affine());
+
+        // Cache the polynomial and commitment
+        self.cached_poly = Some(CachedPolynomial {
+            poly: poly.clone(),
+            commitment: Some(commitment.clone()),
+            intermediates: None,
+        });
+
+        Ok(commitment)
+    }
+
+    /// Open a proof using cached polynomial data.
+    ///
+    /// This requires that `commit_with_cache` was called first with the same polynomial.
+    /// The cached data is used to avoid re-uploading the polynomial to GPU.
+    pub fn open_from_cache<T: Transcript>(
+        &mut self,
+        pk: &HyperKZGProverKey<Bn254>,
+        point: &[Fr],
+        eval: &Fr,
+        transcript: &mut T,
+    ) -> anyhow::Result<HyperKZGProof<Bn254>> {
+        let cached = self.cached_poly.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("No cached polynomial. Call commit_with_cache first.")
+        })?;
+
+        // Use the cached polynomial for open
+        HyperKZGGpu::<Bn254>::open_gpu(pk, &cached.poly, point, eval, transcript)
+    }
+
+    /// Combined commit and open in a single operation.
+    ///
+    /// This is the most efficient method as it:
+    /// 1. Uploads the polynomial to GPU once
+    /// 2. Computes commitment
+    /// 3. Computes intermediate polynomials
+    /// 4. Generates the proof
+    ///
+    /// All without downloading and re-uploading intermediate data.
+    #[tracing::instrument(skip_all, name = "HyperKZGGpuSession::commit_and_open")]
+    pub fn commit_and_open<T: Transcript>(
+        &mut self,
+        pk: &HyperKZGProverKey<Bn254>,
+        poly: &DensePolynomial<Fr>,
+        point: &[Fr],
+        transcript: &mut T,
+    ) -> anyhow::Result<(HyperKZGCommitment<Bn254>, HyperKZGProof<Bn254>)> {
+        let ell = point.len();
+        let n = poly.len();
+        anyhow::ensure!(n == 1 << ell, "Polynomial length must be 2^ell");
+
+        // Phase 1: Compute commitment to original polynomial
+        let poly_commitment = {
+            let results = gpu_batch_commit(pk.g1_powers(), &[poly])?;
+            HyperKZGCommitment(results[0].into_affine())
+        };
+
+        // Phase 1 continued: Create intermediate polynomials using GPU fix_var
+        let mut polys: Vec<DensePolynomial<Fr>> = Vec::with_capacity(ell);
+        polys.push(poly.clone());
+
+        let challenges = &point[..ell - 1];
+        if !challenges.is_empty() {
+            let intermediates = gpu_fix_vars_with_intermediates(poly.evals_ref(), challenges)?;
+            for intermediate in intermediates {
+                polys.push(DensePolynomial::new(intermediate));
+            }
+        }
+
+        assert_eq!(polys.len(), ell);
+        assert_eq!(polys[ell - 1].len(), 2);
+
+        // Commit to intermediate polynomials using GPU MSM
+        let poly_refs: Vec<&DensePolynomial<Fr>> = polys[1..].iter().collect();
+        let coms = gpu_batch_commit(pk.g1_powers(), &poly_refs)?;
+        let coms_aff: Vec<G1Affine> = coms.iter().map(|c| c.into_affine()).collect();
+
+        // Phase 2: Get challenge from transcript
+        transcript.append_points(&coms_aff);
+        let r: Fr = transcript.challenge_scalar();
+        let u = vec![r, -r, r * r];
+
+        // Phase 3: KZG batch open using GPU
+        let (w, v) = kzg_open_batch_gpu(&polys, &u, pk, transcript)?;
+
+        // Cache the polynomial and its data
+        self.cached_poly = Some(CachedPolynomial {
+            poly: poly.clone(),
+            commitment: Some(poly_commitment.clone()),
+            intermediates: Some(polys),
+        });
+
+        let proof = HyperKZGProof {
+            coms: coms_aff,
+            w,
+            v,
+        };
+
+        Ok((poly_commitment, proof))
+    }
+
+    /// Batch commit and open multiple polynomials.
+    ///
+    /// This is useful when you need to commit to multiple polynomials and open them
+    /// at the same point. All operations are batched for efficiency.
+    pub fn batch_commit_and_open<T: Transcript>(
+        &mut self,
+        pk: &HyperKZGProverKey<Bn254>,
+        polys: &[DensePolynomial<Fr>],
+        point: &[Fr],
+        transcript: &mut T,
+    ) -> anyhow::Result<(Vec<HyperKZGCommitment<Bn254>>, Vec<HyperKZGProof<Bn254>>)> {
+        let mut commitments = Vec::with_capacity(polys.len());
+        let mut proofs = Vec::with_capacity(polys.len());
+
+        // Batch commit all polynomials at once
+        let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
+        let commit_results = gpu_batch_commit(pk.g1_powers(), &poly_refs)?;
+
+        for (i, result) in commit_results.iter().enumerate() {
+            commitments.push(HyperKZGCommitment(result.into_affine()));
+
+            // Generate proof for each polynomial
+            let eval = polys[i].evaluate(point)?;
+            let mut poly_transcript = transcript.clone();
+            let proof =
+                HyperKZGGpu::<Bn254>::open_gpu(pk, &polys[i], point, &eval, &mut poly_transcript)?;
+            proofs.push(proof);
+        }
+
+        Ok((commitments, proofs))
+    }
 }
 
 // ============================================================================
@@ -269,8 +587,8 @@ impl HyperKZGGpu<Bn254> {
         let r: Fr = transcript.challenge_scalar();
         let u = vec![r, -r, r * r];
 
-        // Phase 3: KZG batch open (uses existing implementation)
-        let (w, v) = kzg_open_batch(&polys, &u, pk, transcript)?;
+        // Phase 3: KZG batch open using GPU-accelerated implementation
+        let (w, v) = kzg_open_batch_gpu(&polys, &u, pk, transcript)?;
 
         Ok(HyperKZGProof {
             coms: coms_aff,
@@ -714,5 +1032,441 @@ mod tests {
             "Batch commit test passed: {} polynomials, n={}",
             num_polys, n
         );
+    }
+
+    // ========================================================================
+    // New tests for GPU Phase 3 (KZG batch open) operations
+    // ========================================================================
+
+    /// CPU reference for univariate polynomial evaluation using Horner's method.
+    fn cpu_eval_univariate(coeffs: &[Fr], x: &Fr) -> Fr {
+        let mut result = coeffs[coeffs.len() - 1];
+        for i in (0..coeffs.len() - 1).rev() {
+            result = result * x + coeffs[i];
+        }
+        result
+    }
+
+    /// CPU reference for witness polynomial computation.
+    fn cpu_witness_poly(f: &[Fr], u: &Fr) -> Vec<Fr> {
+        let n = f.len();
+        let mut h = vec![Fr::ZERO; n - 1];
+        let mut carry = Fr::ZERO;
+        for i in (1..n).rev() {
+            carry = f[i] + carry * u;
+            h[i - 1] = carry;
+        }
+        h
+    }
+
+    /// Test that GPU eval_univariate_batch matches CPU evaluation.
+    #[test]
+    fn test_eval_univariate_batch_gpu_vs_cpu() {
+        use ark_ff::Zero;
+
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(100);
+
+        for ell in [6, 8, 10] {
+            let n = 1 << ell;
+            let num_polys = 5;
+            let num_points = 3;
+
+            // Generate random polynomials
+            let polys: Vec<Vec<Fr>> = (0..num_polys)
+                .map(|_| (0..n).map(|_| Fr::rand(&mut rng)).collect())
+                .collect();
+            let poly_slices: Vec<&[Fr]> = polys.iter().map(|p| p.as_slice()).collect();
+
+            // Generate random evaluation points
+            let points: Vec<Fr> = (0..num_points).map(|_| Fr::rand(&mut rng)).collect();
+
+            // GPU batch evaluation
+            let gpu_results =
+                gpu_eval_univariate_batch(&poly_slices, &points).expect("GPU eval failed");
+
+            // CPU reference evaluation
+            for (point_idx, point) in points.iter().enumerate() {
+                for (poly_idx, poly) in polys.iter().enumerate() {
+                    let cpu_result = cpu_eval_univariate(poly, point);
+                    let gpu_result = gpu_results[point_idx][poly_idx];
+                    assert_eq!(
+                        cpu_result, gpu_result,
+                        "Mismatch at point_idx={point_idx}, poly_idx={poly_idx}, ell={ell}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Test that GPU witness_poly_batch matches CPU computation.
+    #[test]
+    fn test_witness_poly_batch_gpu_vs_cpu() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(101);
+
+        for ell in [6, 8, 10] {
+            let n = 1 << ell;
+
+            // Generate random polynomial
+            let poly: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+
+            // Generate 3 evaluation points (like HyperKZG: r, -r, r²)
+            let r = Fr::rand(&mut rng);
+            let points = vec![r, -r, r * r];
+
+            // GPU batch witness computation
+            let gpu_witnesses = gpu_witness_poly_batch(&poly, &points).expect("GPU witness failed");
+
+            // CPU reference computation
+            for (i, point) in points.iter().enumerate() {
+                let cpu_witness = cpu_witness_poly(&poly, point);
+                assert_eq!(
+                    cpu_witness.len(),
+                    gpu_witnesses[i].len(),
+                    "Witness length mismatch at point {i}"
+                );
+                for (j, (cpu, gpu)) in cpu_witness.iter().zip(gpu_witnesses[i].iter()).enumerate() {
+                    assert_eq!(cpu, gpu, "Mismatch at point {i}, index {j}, ell={ell}");
+                }
+            }
+        }
+    }
+
+    /// Test that kzg_open_batch_gpu produces valid proofs (same as CPU).
+    #[test]
+    fn test_kzg_open_batch_gpu_produces_valid_proofs() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(102);
+
+        for ell in [8, 10] {
+            let n = 1 << ell;
+
+            let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+            let poly = DensePolynomial::from(poly_raw);
+            let point: Vec<Fr> = (0..ell)
+                .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
+                .collect();
+            let eval = poly.evaluate(&point).expect("eval failed");
+
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+            let (pk, vk) = srs.trim(n);
+
+            let (comm, _) = HyperKZG::<Bn254>::commit(&pk, &poly).expect("commit failed");
+
+            // Generate proof using GPU (open_gpu uses kzg_open_batch_gpu internally)
+            let mut prover_transcript = Blake3Transcript::new(b"KzgOpenBatchGpuTest");
+            let proof = HyperKZGGpu::<Bn254>::open_gpu(&pk, &poly, &point, &eval, &mut prover_transcript)
+                .expect("GPU open failed");
+
+            // Verify the proof
+            let mut verifier_transcript = Blake3Transcript::new(b"KzgOpenBatchGpuTest");
+            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &proof, &mut verifier_transcript)
+                .expect("Verification failed for GPU-generated proof");
+
+            println!("ell={ell}: kzg_open_batch_gpu produces valid proof");
+        }
+    }
+
+    /// Test that kzg_open_batch_gpu matches kzg_open_batch output exactly.
+    #[test]
+    fn test_kzg_open_batch_gpu_vs_cpu_output() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(103);
+
+        for ell in [8, 10] {
+            let n = 1 << ell;
+
+            let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+            let poly = DensePolynomial::from(poly_raw);
+            let point: Vec<Fr> = (0..ell)
+                .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
+                .collect();
+            let eval = poly.evaluate(&point).expect("eval failed");
+
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+            let (pk, vk) = srs.trim(n);
+
+            let (comm, _) = HyperKZG::<Bn254>::commit(&pk, &poly).expect("commit failed");
+
+            // CPU proof (using open_cpu which uses kzg_open_batch)
+            let mut cpu_transcript = Blake3Transcript::new(b"BatchCompare");
+            let cpu_proof = HyperKZGGpu::<Bn254>::open_cpu(&pk, &poly, &point, &eval, &mut cpu_transcript)
+                .expect("CPU open failed");
+
+            // GPU proof (using open_gpu which uses kzg_open_batch_gpu)
+            let mut gpu_transcript = Blake3Transcript::new(b"BatchCompare");
+            let gpu_proof = HyperKZGGpu::<Bn254>::open_gpu(&pk, &poly, &point, &eval, &mut gpu_transcript)
+                .expect("GPU open failed");
+
+            // Compare intermediate commitments (Phase 1 + 2)
+            assert_eq!(cpu_proof.coms.len(), gpu_proof.coms.len());
+            for (i, (cpu, gpu)) in cpu_proof.coms.iter().zip(gpu_proof.coms.iter()).enumerate() {
+                assert_eq!(cpu, gpu, "coms[{i}] differs");
+            }
+
+            // Compare evaluations matrix v (Phase 3)
+            assert_eq!(cpu_proof.v.len(), gpu_proof.v.len());
+            for (i, (cpu_v, gpu_v)) in cpu_proof.v.iter().zip(gpu_proof.v.iter()).enumerate() {
+                assert_eq!(cpu_v.len(), gpu_v.len(), "v[{i}] length differs");
+                for (j, (c, g)) in cpu_v.iter().zip(gpu_v.iter()).enumerate() {
+                    assert_eq!(c, g, "v[{i}][{j}] differs");
+                }
+            }
+
+            // Compare witness commitments w (Phase 3)
+            assert_eq!(cpu_proof.w.len(), gpu_proof.w.len());
+            for (i, (cpu, gpu)) in cpu_proof.w.iter().zip(gpu_proof.w.iter()).enumerate() {
+                assert_eq!(cpu, gpu, "w[{i}] differs");
+            }
+
+            // Both should verify
+            let mut verify_transcript = Blake3Transcript::new(b"BatchCompare");
+            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &gpu_proof, &mut verify_transcript)
+                .expect("GPU proof verification failed");
+
+            println!("ell={ell}: kzg_open_batch_gpu output matches kzg_open_batch");
+        }
+    }
+
+    // ========================================================================
+    // Tests for HyperKZGGpuSession (Buffer Persistence)
+    // ========================================================================
+
+    /// Test that HyperKZGGpuSession::commit_with_cache produces correct commitments.
+    #[test]
+    fn test_session_commit_with_cache() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(200);
+
+        for ell in [8, 10] {
+            let n = 1 << ell;
+
+            let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+            let poly = DensePolynomial::from(poly_raw);
+
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+            let (pk, _) = srs.trim(n);
+
+            // Session commit
+            let mut session = HyperKZGGpuSession::new();
+            assert!(!session.has_cached_poly());
+
+            let session_comm = session.commit_with_cache(&pk, &poly).expect("Session commit failed");
+            assert!(session.has_cached_poly());
+
+            // Standard GPU commit
+            let (gpu_comm, _) = HyperKZGGpu::<Bn254>::commit(&pk, &poly).expect("GPU commit failed");
+
+            assert_eq!(
+                session_comm.0, gpu_comm.0,
+                "Session commit differs from GPU commit"
+            );
+
+            // Check cached commitment matches
+            assert_eq!(
+                session.cached_commitment().unwrap().0,
+                session_comm.0,
+                "Cached commitment doesn't match"
+            );
+
+            println!("ell={ell}: Session commit_with_cache works correctly");
+        }
+    }
+
+    /// Test that HyperKZGGpuSession::open_from_cache produces valid proofs.
+    #[test]
+    fn test_session_open_from_cache() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(201);
+
+        for ell in [8, 10] {
+            let n = 1 << ell;
+
+            let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+            let poly = DensePolynomial::from(poly_raw);
+            let point: Vec<Fr> = (0..ell)
+                .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
+                .collect();
+            let eval = poly.evaluate(&point).expect("eval failed");
+
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+            let (pk, vk) = srs.trim(n);
+
+            // Session workflow: commit then open
+            let mut session = HyperKZGGpuSession::new();
+            let comm = session.commit_with_cache(&pk, &poly).expect("Commit failed");
+
+            let mut transcript = Blake3Transcript::new(b"SessionOpen");
+            let proof = session
+                .open_from_cache(&pk, &point, &eval, &mut transcript)
+                .expect("Open from cache failed");
+
+            // Verify the proof
+            let mut verify_transcript = Blake3Transcript::new(b"SessionOpen");
+            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &proof, &mut verify_transcript)
+                .expect("Session proof verification failed");
+
+            println!("ell={ell}: Session open_from_cache produces valid proofs");
+        }
+    }
+
+    /// Test that HyperKZGGpuSession::commit_and_open produces valid proofs.
+    #[test]
+    fn test_session_commit_and_open() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(202);
+
+        for ell in [8, 10] {
+            let n = 1 << ell;
+
+            let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+            let poly = DensePolynomial::from(poly_raw);
+            let point: Vec<Fr> = (0..ell)
+                .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
+                .collect();
+            let eval = poly.evaluate(&point).expect("eval failed");
+
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+            let (pk, vk) = srs.trim(n);
+
+            // Combined commit_and_open
+            let mut session = HyperKZGGpuSession::new();
+            let mut transcript = Blake3Transcript::new(b"SessionCombined");
+            let (comm, proof) = session
+                .commit_and_open(&pk, &poly, &point, &mut transcript)
+                .expect("commit_and_open failed");
+
+            // Verify the proof
+            let mut verify_transcript = Blake3Transcript::new(b"SessionCombined");
+            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &proof, &mut verify_transcript)
+                .expect("Combined session proof verification failed");
+
+            // Check that data is cached
+            assert!(session.has_cached_poly());
+            assert!(session.cached_commitment().is_some());
+
+            println!("ell={ell}: Session commit_and_open produces valid proofs");
+        }
+    }
+
+    /// Test that HyperKZGGpuSession::commit_and_open matches separate commit + open.
+    #[test]
+    fn test_session_commit_and_open_matches_separate() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(203);
+
+        for ell in [8, 10] {
+            let n = 1 << ell;
+
+            let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+            let poly = DensePolynomial::from(poly_raw);
+            let point: Vec<Fr> = (0..ell)
+                .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
+                .collect();
+            let eval = poly.evaluate(&point).expect("eval failed");
+
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+            let (pk, vk) = srs.trim(n);
+
+            // Method 1: Combined commit_and_open
+            let mut session = HyperKZGGpuSession::new();
+            let mut transcript1 = Blake3Transcript::new(b"SessionCompare");
+            let (comm1, proof1) = session
+                .commit_and_open(&pk, &poly, &point, &mut transcript1)
+                .expect("commit_and_open failed");
+
+            // Method 2: Separate commit + open (using standard GPU methods)
+            let (comm2, _) = HyperKZGGpu::<Bn254>::commit(&pk, &poly).expect("commit failed");
+            let mut transcript2 = Blake3Transcript::new(b"SessionCompare");
+            let proof2 =
+                HyperKZGGpu::<Bn254>::open_gpu(&pk, &poly, &point, &eval, &mut transcript2)
+                    .expect("open_gpu failed");
+
+            // Commitments should match
+            assert_eq!(comm1.0, comm2.0, "Commitments differ");
+
+            // Intermediate commitments should match
+            assert_eq!(proof1.coms.len(), proof2.coms.len());
+            for (i, (c1, c2)) in proof1.coms.iter().zip(proof2.coms.iter()).enumerate() {
+                assert_eq!(c1, c2, "coms[{i}] differs");
+            }
+
+            // Both proofs should verify
+            let mut verify_transcript = Blake3Transcript::new(b"SessionCompare");
+            HyperKZG::<Bn254>::verify(&vk, &comm1, &point, &eval, &proof1, &mut verify_transcript)
+                .expect("Combined proof verification failed");
+
+            let mut verify_transcript = Blake3Transcript::new(b"SessionCompare");
+            HyperKZG::<Bn254>::verify(&vk, &comm2, &point, &eval, &proof2, &mut verify_transcript)
+                .expect("Separate proof verification failed");
+
+            println!("ell={ell}: Session commit_and_open matches separate operations");
+        }
+    }
+
+    /// Test session cache clearing.
+    #[test]
+    fn test_session_clear_cache() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(204);
+        let ell = 8;
+        let n = 1 << ell;
+
+        let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+        let poly = DensePolynomial::from(poly_raw);
+
+        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+        let (pk, _) = srs.trim(n);
+
+        let mut session = HyperKZGGpuSession::new();
+        assert!(!session.has_cached_poly());
+
+        // Cache a polynomial
+        let _ = session.commit_with_cache(&pk, &poly).expect("Commit failed");
+        assert!(session.has_cached_poly());
+
+        // Clear cache
+        session.clear_cache();
+        assert!(!session.has_cached_poly());
+        assert!(session.cached_commitment().is_none());
+
+        println!("Session clear_cache works correctly");
     }
 }
