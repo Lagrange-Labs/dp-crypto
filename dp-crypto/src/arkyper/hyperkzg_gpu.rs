@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
 use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
+use ark_ff::AdditiveGroup;
 
 use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
 use super::transcript::Transcript;
@@ -227,29 +228,33 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
     pk: &HyperKZGProverKey<Bn254>,
     transcript: &mut T,
 ) -> anyhow::Result<(Vec<G1Affine>, Vec<Vec<Fr>>)> {
-    let _k = f.len(); // Number of polynomials
-    let _t = u.len(); // Number of evaluation points (3 for HyperKZG)
+    let k = f.len(); // Number of polynomials
+    let t = u.len(); // Number of evaluation points (3 for HyperKZG)
 
-    // Step 1: GPU batch evaluation of all polynomials at all points
-    // Collect polynomial coefficients as slices
-    let poly_slices: Vec<&[Fr]> = f.iter().map(|p| p.evals_ref()).collect();
-
-    // GPU: Evaluate all k polynomials at all t points
-    // Returns v[point_idx][poly_idx]
-    let v = gpu_eval_univariate_batch(&poly_slices, u)?;
+    // Step 1: Evaluate all polynomials at all points
+    // Note: Polynomials may have different lengths (n, n/2, n/4, ..., 2 in HyperKZG)
+    // so we evaluate each individually using eval_as_univariate
+    let mut v = vec![vec![Fr::ZERO; k]; t];
+    for (i, point) in u.iter().enumerate() {
+        for (j, poly) in f.iter().enumerate() {
+            v[i][j] = poly.eval_as_univariate(point);
+        }
+    }
 
     // Step 2: Update transcript and get challenge
     let scalars: Vec<&Fr> = v.iter().flatten().collect();
     transcript.append_scalars::<Fr>(&scalars);
     let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(f.len());
 
-    // Step 3: GPU linear combination to get B polynomial
+    // Step 3: Linear combination to get B polynomial
     // B(x) = sum(q^i * f_i(x)) for i = 0..k
-    let b_poly_coeffs = gpu_linear_combine(&poly_slices, &q_powers)?;
+    // Use CPU linear_combination which handles variable-length polynomials
+    let poly_refs: Vec<&DensePolynomial<Fr>> = f.iter().collect();
+    let b_poly = DensePolynomial::linear_combination(&poly_refs, &q_powers);
 
     // Step 4: GPU batch witness polynomial computation
     // For each point u[i], compute witness h_i where B(x) = h_i(x) * (x - u[i]) + B(u[i])
-    let witness_polys = gpu_witness_poly_batch(&b_poly_coeffs, u)?;
+    let witness_polys = gpu_witness_poly_batch(b_poly.evals_ref(), u)?;
 
     // Step 5: GPU MSM for witness commitments
     // Each witness polynomial needs to be committed using G1 powers
