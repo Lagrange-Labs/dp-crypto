@@ -19,7 +19,7 @@ use ark_ff::AdditiveGroup;
 use ark_std::{cfg_iter, Zero};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
-use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
+use super::gpu_msm::{convert_bases_to_gpu, GPU_MSM};
 use super::transcript::Transcript;
 use super::{
     kzg_open_batch, HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGVerifierKey,
@@ -27,7 +27,8 @@ use super::{
 };
 use crate::arkyper::interface::CommitmentScheme;
 use crate::poly::dense::DensePolynomial;
-use ec_gpu_gen::{program, rust_gpu_tools::Device, PolyOpsKernel};
+use ec_gpu_gen::{program, rust_gpu_tools::Device, PolyOpsKernel, FusedPolyCommit, GpuAffine};
+use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
 
 /// GPU-accelerated HyperKZG implementation.
 ///
@@ -89,6 +90,43 @@ impl GpuPolyOpsHolder {
 pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(GpuPolyOpsHolder::new()));
 
+/// Holder for fused poly-commit kernel (combines fix_var + MSM).
+pub struct FusedPolyCommitHolder {
+    fused: Option<FusedPolyCommit<Fr, GpuG1Affine>>,
+}
+
+impl FusedPolyCommitHolder {
+    pub fn new() -> Self {
+        Self { fused: None }
+    }
+
+    pub fn get_or_init(&mut self) -> anyhow::Result<&FusedPolyCommit<Fr, GpuG1Affine>> {
+        if self.fused.is_none() {
+            let devices = Device::all();
+            if devices.is_empty() {
+                return Err(anyhow::anyhow!("No GPU devices found"));
+            }
+
+            let program = program!(&devices[0])
+                .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
+
+            // Use same work_units calculation as multiexp (from GPU_MSM)
+            // Typically 256 * 64 = 16384 for most GPUs
+            let work_units = 256 * 64;
+
+            let fused = FusedPolyCommit::create(program, work_units)
+                .map_err(|e| anyhow::anyhow!("Failed to create fused poly-commit kernel: {e}"))?;
+
+            self.fused = Some(fused);
+        }
+
+        Ok(self.fused.as_ref().unwrap())
+    }
+}
+
+pub static GPU_FUSED_POLY_COMMIT: std::sync::LazyLock<std::sync::Mutex<FusedPolyCommitHolder>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(FusedPolyCommitHolder::new()));
+
 // ============================================================================
 // GPU Batch Operations
 // ============================================================================
@@ -147,6 +185,36 @@ pub fn gpu_fix_vars_with_intermediates(
         .kernel()
         .fix_vars_with_intermediates(poly, challenges)
         .map_err(|e| anyhow::anyhow!("GPU fix_vars_with_intermediates error: {e}"))
+}
+
+/// Fused GPU operation: fix_vars + commit in single GPU session.
+///
+/// This keeps G1 bases on GPU between all MSM operations, avoiding redundant
+/// base uploads. Also keeps polynomial data on GPU between fix_var iterations.
+///
+/// Returns (intermediates, commitments) where:
+/// - intermediates[i] = result of applying challenges[0..=i] to poly
+/// - commitments[i] = MSM commitment to intermediates[i]
+pub fn gpu_fix_vars_and_commit(
+    poly: &[Fr],
+    challenges: &[Fr],
+    g1_powers: &[G1Affine],
+) -> anyhow::Result<(Vec<Vec<Fr>>, Vec<G1Projective>)> {
+    if challenges.is_empty() {
+        return Ok((vec![], vec![]));
+    }
+
+    // Convert bases to GPU format
+    let bases_gpu = convert_bases_to_gpu(&g1_powers[..poly.len()]);
+
+    let result = GPU_FUSED_POLY_COMMIT
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .fix_vars_and_commit(poly, challenges, &bases_gpu)
+        .map_err(|e| anyhow::anyhow!("GPU fused fix_vars_and_commit error: {e}"))?;
+
+    Ok((result.intermediates, result.commitments))
 }
 
 /// GPU-accelerated linear combination of polynomials.
@@ -479,25 +547,27 @@ impl HyperKZGGpuSession {
             HyperKZGCommitment(results[0].into_affine())
         };
 
-        // Phase 1 continued: Create intermediate polynomials using GPU fix_var
+        // Phase 1 continued: Fused fix_vars + commit for intermediates
         let mut polys: Vec<DensePolynomial<Fr>> = Vec::with_capacity(ell);
         polys.push(poly.clone());
 
         let challenges = &point[..ell - 1];
-        if !challenges.is_empty() {
-            let intermediates = gpu_fix_vars_with_intermediates(poly.evals_ref(), challenges)?;
+        let coms_aff: Vec<G1Affine> = if !challenges.is_empty() {
+            // Fused operation: fix_vars + commit in single GPU session
+            let (intermediates, coms) =
+                gpu_fix_vars_and_commit(poly.evals_ref(), challenges, pk.g1_powers())?;
+
             for intermediate in intermediates {
                 polys.push(DensePolynomial::new(intermediate));
             }
-        }
+
+            coms.iter().map(|c| c.into_affine()).collect()
+        } else {
+            vec![]
+        };
 
         assert_eq!(polys.len(), ell);
         assert_eq!(polys[ell - 1].len(), 2);
-
-        // Commit to intermediate polynomials using GPU MSM
-        let poly_refs: Vec<&DensePolynomial<Fr>> = polys[1..].iter().collect();
-        let coms = gpu_batch_commit(pk.g1_powers(), &poly_refs)?;
-        let coms_aff: Vec<G1Affine> = coms.iter().map(|c| c.into_affine()).collect();
 
         // Phase 2: Get challenge from transcript
         transcript.append_points(&coms_aff);
@@ -581,26 +651,27 @@ impl HyperKZGGpu<Bn254> {
         let n = poly.len();
         assert_eq!(n, 1 << ell);
 
-        // Phase 1: Create commitments using GPU fix_var
+        // Phase 1: Fused fix_vars + commit - keeps bases on GPU between all MSMs
         let mut polys: Vec<DensePolynomial<Fr>> = Vec::with_capacity(ell);
         polys.push(poly.clone());
 
-        // Use GPU for all fix_var operations
         let challenges = &point[..ell - 1];
-        if !challenges.is_empty() {
-            let intermediates = gpu_fix_vars_with_intermediates(poly.evals_ref(), challenges)?;
+        let coms_aff: Vec<G1Affine> = if !challenges.is_empty() {
+            // Fused operation: fix_vars + commit in single GPU session
+            let (intermediates, coms) =
+                gpu_fix_vars_and_commit(poly.evals_ref(), challenges, pk.g1_powers())?;
+
             for intermediate in intermediates {
                 polys.push(DensePolynomial::new(intermediate));
             }
-        }
+
+            coms.iter().map(|c| c.into_affine()).collect()
+        } else {
+            vec![]
+        };
 
         assert_eq!(polys.len(), ell);
         assert_eq!(polys[ell - 1].len(), 2);
-
-        // Commit to intermediate polynomials using GPU MSM
-        let poly_refs: Vec<&DensePolynomial<Fr>> = polys[1..].iter().collect();
-        let coms = gpu_batch_commit(pk.g1_powers(), &poly_refs)?;
-        let coms_aff: Vec<G1Affine> = coms.iter().map(|c| c.into_affine()).collect();
 
         // Phase 2: Get challenge from transcript
         transcript.append_points(&coms_aff);
