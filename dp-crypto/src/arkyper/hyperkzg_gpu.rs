@@ -107,7 +107,8 @@ impl FusedPolyCommitHolder {
                 return Err(anyhow::anyhow!("No GPU devices found"));
             }
 
-            let program = program!(&devices[0])
+            let device = &devices[0];
+            let program = program!(device)
                 .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
 
             // Use same work_units calculation as multiexp (from GPU_MSM)
