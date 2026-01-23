@@ -159,6 +159,41 @@ impl GpuMsm {
             .witness_poly(f, u)
             .map_err(|e| anyhow::anyhow!("GPU witness_poly failed: {e}"))
     }
+
+    /// Batch MSM: upload bases once, compute multiple MSMs with different scalars.
+    ///
+    /// More efficient than calling msm() multiple times because bases are uploaded only once.
+    /// All scalar sets must be padded to the same length (use zeros for padding).
+    pub fn batch_msm(
+        &self,
+        bases: &[G1Affine],
+        scalar_sets: &[&[Fr]],
+    ) -> anyhow::Result<Vec<G1Projective>> {
+        if scalar_sets.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // All scalar sets should be same length for efficient batching
+        let max_len = scalar_sets.iter().map(|s| s.len()).max().unwrap_or(0);
+
+        // Convert bases to GPU format
+        let bases_gpu = convert_bases_to_gpu(&bases[..max_len]);
+
+        // Convert all scalar sets to bigint, padding with zeros if needed
+        let exp_sets: Vec<Vec<_>> = scalar_sets
+            .iter()
+            .map(|scalars| {
+                let mut exps = convert_scalars_to_bigint(scalars);
+                // Pad with zeros to max_len
+                exps.resize(max_len, <Fr as PrimeField>::BigInt::from(0u64));
+                exps
+            })
+            .collect();
+
+        self.kernel
+            .batch_multiexp(&bases_gpu, &exp_sets)
+            .map_err(|e| anyhow::anyhow!("GPU batch MSM failed: {e}"))
+    }
 }
 
 impl Default for GpuMsm {

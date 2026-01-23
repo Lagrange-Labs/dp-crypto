@@ -16,6 +16,8 @@ use std::sync::Arc;
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
 use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
 use ark_ff::AdditiveGroup;
+use ark_std::{cfg_iter, Zero};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
 use super::transcript::Transcript;
@@ -93,8 +95,8 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 
 /// Batch commit using GPU - single call for multiple polynomials.
 ///
-/// This uploads all bases once and processes all polynomials in sequence,
-/// minimizing GPU memory transfers.
+/// This uploads bases to GPU once and processes all polynomials in a single
+/// GPU session, minimizing memory transfers.
 pub fn gpu_batch_commit(
     g1_powers: &[G1Affine],
     polys: &[&DensePolynomial<Fr>],
@@ -103,28 +105,18 @@ pub fn gpu_batch_commit(
         return Ok(vec![]);
     }
 
-    // Pre-convert bases to GPU format once
+    // Find max polynomial length
     let max_len = polys.iter().map(|p| p.len()).max().unwrap_or(0);
-    let bases_gpu = Arc::new(convert_bases_to_gpu(&g1_powers[..max_len]));
 
-    // Process all polynomials
-    let results: Vec<G1Projective> = polys
-        .iter()
-        .map(|poly| {
-            let coeffs = poly.evals_ref();
-            let msm_size = coeffs.len();
-            let scalars_bigint = Arc::new(convert_scalars_to_bigint(coeffs));
-            let bases_slice = Arc::new(bases_gpu[..msm_size].to_vec());
+    // Collect all scalar sets (polynomial coefficients)
+    let scalar_sets: Vec<&[Fr]> = polys.iter().map(|p| p.evals_ref()).collect();
 
-            GPU_MSM
-                .lock()
-                .unwrap()
-                .msm_arc(bases_slice, scalars_bigint)
-                .map_err(|e| anyhow::anyhow!("GPU MSM error: {e}"))
-        })
-        .collect::<anyhow::Result<Vec<_>>>()?;
-
-    Ok(results)
+    // Use batch MSM - uploads bases once, processes all scalars in one GPU session
+    GPU_MSM
+        .lock()
+        .unwrap()
+        .batch_msm(&g1_powers[..max_len], &scalar_sets)
+        .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))
 }
 
 /// GPU-accelerated fix_var operation.
@@ -252,34 +244,31 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
     let poly_refs: Vec<&DensePolynomial<Fr>> = f.iter().collect();
     let b_poly = DensePolynomial::linear_combination(&poly_refs, &q_powers);
 
-    // Step 4: GPU batch witness polynomial computation
-    // For each point u[i], compute witness h_i where B(x) = h_i(x) * (x - u[i]) + B(u[i])
-    let witness_polys = gpu_witness_poly_batch(b_poly.evals_ref(), u)?;
-
-    // Step 5: GPU MSM for witness commitments
-    // Each witness polynomial needs to be committed using G1 powers
-    let g1_powers = pk.g1_powers();
-    let b_poly_len = b_poly.len();
-
-    // GPU witness returns n-1 coefficients, but we need to pad to n (power of 2)
-    // to match CPU behavior and satisfy DensePolynomial requirements
-    let witness_dense: Vec<DensePolynomial<Fr>> = witness_polys
-        .into_iter()
-        .map(|mut w| {
-            // Pad with trailing zero to make length equal to b_poly_len (power of 2)
-            w.push(Fr::ZERO);
-            debug_assert_eq!(w.len(), b_poly_len);
-            DensePolynomial::new(w)
+    // Step 4: CPU witness polynomial computation (parallel across points)
+    // Witness computation is inherently sequential per-point (recurrence relation),
+    // but we can parallelize across the 3 points. GPU is inefficient here because
+    // it would only use 3 threads each doing O(n) sequential work.
+    let b_evals = b_poly.evals_ref();
+    let witness_polys: Vec<DensePolynomial<Fr>> = cfg_iter!(u)
+        .map(|ui| {
+            let h = compute_witness_polynomial(b_evals, *ui);
+            DensePolynomial::new(h)
         })
         .collect();
-    let witness_refs: Vec<&DensePolynomial<Fr>> = witness_dense.iter().collect();
+
+    // Step 5: GPU MSM for witness commitments
+    // MSM is highly parallel and benefits from GPU acceleration
+    let g1_powers = pk.g1_powers();
+    let witness_len = witness_polys[0].len();
 
     anyhow::ensure!(
-        b_poly_len <= g1_powers.len(),
+        witness_len <= g1_powers.len(),
         "Witness polynomial length {} exceeds G1 powers length {}",
-        b_poly_len,
+        witness_len,
         g1_powers.len()
     );
+
+    let witness_refs: Vec<&DensePolynomial<Fr>> = witness_polys.iter().collect();
 
     // GPU MSM for all witness polynomials
     let w_projective = gpu_batch_commit(g1_powers, &witness_refs)?;
@@ -290,6 +279,20 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
     let _d_0: Fr = transcript.challenge_scalar();
 
     Ok((w_aff, v))
+}
+
+/// Compute witness polynomial h(x) where f(x) = h(x) * (x - u) + f(u).
+///
+/// Uses Horner's method in reverse: h[i-1] = f[i] + h[i] * u
+/// This is inherently sequential due to the recurrence relation.
+#[inline]
+fn compute_witness_polynomial(f: &[Fr], u: Fr) -> Vec<Fr> {
+    let d = f.len();
+    let mut h = vec![Fr::zero(); d];
+    for i in (1..d).rev() {
+        h[i - 1] = f[i] + h[i] * u;
+    }
+    h
 }
 
 // ============================================================================
