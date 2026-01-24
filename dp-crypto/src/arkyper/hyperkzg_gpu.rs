@@ -11,7 +11,6 @@
 
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
 use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
@@ -27,7 +26,7 @@ use super::{
 };
 use crate::arkyper::interface::CommitmentScheme;
 use crate::poly::dense::DensePolynomial;
-use ec_gpu_gen::{program, rust_gpu_tools::Device, PolyOpsKernel, FusedPolyCommit, GpuAffine};
+use ec_gpu_gen::{program, rust_gpu_tools::Device, PolyOpsKernel, FusedPolyCommit};
 use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
 
 /// GPU-accelerated HyperKZG implementation.
