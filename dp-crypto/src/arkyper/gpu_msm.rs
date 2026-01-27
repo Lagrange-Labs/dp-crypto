@@ -13,10 +13,20 @@ use rayon::prelude::*;
 pub static GPU_MSM: std::sync::LazyLock<Mutex<GpuMsm>> =
     std::sync::LazyLock::new(|| Mutex::new(GpuMsm::new().expect("Failed to initialize GPU MSM")));
 
+/// Cached converted bases for GPU operations
+struct CachedBases {
+    /// Length of the original bases that were converted
+    len: usize,
+    /// GPU-format bases
+    bases_gpu: Vec<G1AffineM>,
+}
+
 pub struct GpuMsm {
     kernel: MultiexpKernel<'static, GpuG1Affine>,
     poly_ops: PolyOpsKernel<Fr>,
     pool: Worker,
+    /// Cached converted bases to avoid repeated conversions
+    cached_bases: Option<CachedBases>,
 }
 
 impl GpuMsm {
@@ -52,6 +62,7 @@ impl GpuMsm {
             kernel,
             poly_ops,
             pool,
+            cached_bases: None,
         })
     }
 
@@ -86,7 +97,112 @@ impl GpuMsm {
             kernel,
             poly_ops,
             pool,
+            cached_bases: None,
         })
+    }
+
+    /// Cache bases for repeated MSM operations with the same bases.
+    ///
+    /// Call this once before multiple `batch_msm_cached` calls to avoid
+    /// repeated base conversions.
+    pub fn cache_bases(&mut self, bases: &[G1Affine]) {
+        let bases_gpu = convert_bases_to_gpu(bases);
+        self.cached_bases = Some(CachedBases {
+            len: bases.len(),
+            bases_gpu,
+        });
+    }
+
+    /// Clear cached bases.
+    pub fn clear_cached_bases(&mut self) {
+        self.cached_bases = None;
+    }
+
+    /// Check if bases are cached and of sufficient length.
+    pub fn has_cached_bases(&self, required_len: usize) -> bool {
+        self.cached_bases
+            .as_ref()
+            .map(|c| c.len >= required_len)
+            .unwrap_or(false)
+    }
+
+    /// Get a slice of cached bases.
+    ///
+    /// Returns None if bases are not cached or cached length is insufficient.
+    pub fn get_cached_bases_slice(&self, len: usize) -> Option<&[G1AffineM]> {
+        self.cached_bases
+            .as_ref()
+            .filter(|c| c.len >= len)
+            .map(|c| &c.bases_gpu[..len])
+    }
+
+    /// Batch MSM using cached bases (optimization #11).
+    ///
+    /// Requires `cache_bases` to have been called first with bases of sufficient length.
+    /// Falls back to `batch_msm` if bases are not cached.
+    pub fn batch_msm_cached(
+        &mut self,
+        bases: &[G1Affine],
+        scalar_sets: &[&[Fr]],
+    ) -> anyhow::Result<Vec<G1Projective>> {
+        if scalar_sets.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let max_len = scalar_sets.iter().map(|s| s.len()).max().unwrap_or(0);
+
+        // Check if we have cached bases of sufficient length
+        let bases_gpu = if let Some(cached) = &self.cached_bases {
+            if cached.len >= max_len {
+                // Use cached bases
+                &cached.bases_gpu[..max_len]
+            } else {
+                // Cache is too small, need to re-convert
+                // Update the cache while we're at it
+                let new_bases_gpu = convert_bases_to_gpu(&bases[..max_len]);
+                self.cached_bases = Some(CachedBases {
+                    len: max_len,
+                    bases_gpu: new_bases_gpu,
+                });
+                &self.cached_bases.as_ref().unwrap().bases_gpu[..max_len]
+            }
+        } else {
+            // No cache, convert and cache
+            let new_bases_gpu = convert_bases_to_gpu(&bases[..max_len]);
+            self.cached_bases = Some(CachedBases {
+                len: max_len,
+                bases_gpu: new_bases_gpu,
+            });
+            &self.cached_bases.as_ref().unwrap().bases_gpu[..max_len]
+        };
+
+        // Convert all scalar sets to bigint in parallel
+        let exp_sets: Vec<Vec<_>> = scalar_sets
+            .par_iter()
+            .map(|scalars| {
+                let mut exps = convert_scalars_to_bigint(scalars);
+                exps.resize(max_len, <Fr as PrimeField>::BigInt::from(0u64));
+                exps
+            })
+            .collect();
+
+        // Use dynamic bit-length optimization - computes effective bits per scalar set
+        self.kernel
+            .batch_multiexp(bases_gpu, &exp_sets)
+            .map_err(|e| anyhow::anyhow!("GPU batch MSM failed: {e}"))
+    }
+
+    /// Batch MSM using cached bases with dynamic small-scalar optimization.
+    ///
+    /// This variant computes the effective bit-length of scalars and only processes
+    /// the windows that contain actual data. Provides significant speedup when
+    /// scalars are small (e.g., 64-bit values instead of full 254-bit).
+    pub fn batch_msm_cached_dynamic(
+        &mut self,
+        bases: &[G1Affine],
+        scalar_sets: &[&[Fr]],
+    ) -> anyhow::Result<Vec<G1Projective>> {
+        self.batch_msm_cached(bases, scalar_sets)
     }
 
     pub fn msm(&mut self, bases: &[G1Affine], scalars: &[Fr]) -> anyhow::Result<G1Projective> {
@@ -164,6 +280,10 @@ impl GpuMsm {
     ///
     /// More efficient than calling msm() multiple times because bases are uploaded only once.
     /// All scalar sets must be padded to the same length (use zeros for padding).
+    ///
+    /// Uses dynamic bit-length optimization: computes effective bit-length of scalars
+    /// and only processes windows containing actual data. This provides significant
+    /// speedup when scalars are small.
     pub fn batch_msm(
         &self,
         bases: &[G1Affine],
@@ -176,12 +296,14 @@ impl GpuMsm {
         // All scalar sets should be same length for efficient batching
         let max_len = scalar_sets.iter().map(|s| s.len()).max().unwrap_or(0);
 
-        // Convert bases to GPU format
+        // Convert bases to GPU format (parallelized internally)
         let bases_gpu = convert_bases_to_gpu(&bases[..max_len]);
 
-        // Convert all scalar sets to bigint, padding with zeros if needed
+        // Convert all scalar sets to bigint in parallel (optimization #5)
+        // This parallelizes across scalar sets, and each convert_scalars_to_bigint
+        // is also internally parallelized
         let exp_sets: Vec<Vec<_>> = scalar_sets
-            .iter()
+            .par_iter()
             .map(|scalars| {
                 let mut exps = convert_scalars_to_bigint(scalars);
                 // Pad with zeros to max_len
@@ -190,8 +312,41 @@ impl GpuMsm {
             })
             .collect();
 
+        // Use dynamic bit-length optimization - computes effective bits per scalar set
+        // and only processes windows containing actual data
         self.kernel
             .batch_multiexp(&bases_gpu, &exp_sets)
+            .map_err(|e| anyhow::anyhow!("GPU batch MSM failed: {e}"))
+    }
+
+    /// Batch MSM with fixed 254-bit assumption for BN254 scalars.
+    ///
+    /// Use this when scalars are known to be close to full size (254 bits)
+    /// to avoid the CPU scan for effective bits.
+    pub fn batch_msm_fixed_bits(
+        &self,
+        bases: &[G1Affine],
+        scalar_sets: &[&[Fr]],
+    ) -> anyhow::Result<Vec<G1Projective>> {
+        if scalar_sets.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let max_len = scalar_sets.iter().map(|s| s.len()).max().unwrap_or(0);
+        let bases_gpu = convert_bases_to_gpu(&bases[..max_len]);
+
+        let exp_sets: Vec<Vec<_>> = scalar_sets
+            .par_iter()
+            .map(|scalars| {
+                let mut exps = convert_scalars_to_bigint(scalars);
+                exps.resize(max_len, <Fr as PrimeField>::BigInt::from(0u64));
+                exps
+            })
+            .collect();
+
+        const BN254_SCALAR_BITS: usize = 254;
+        self.kernel
+            .batch_multiexp_fixed_bits(&bases_gpu, &exp_sets, BN254_SCALAR_BITS)
             .map_err(|e| anyhow::anyhow!("GPU batch MSM failed: {e}"))
     }
 }

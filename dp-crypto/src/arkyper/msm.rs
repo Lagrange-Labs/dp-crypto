@@ -61,35 +61,39 @@ pub fn batch_poly_msm_gpu_bn254<'a, A: AffineRepr>(
     g1_powers: &[A],
     polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
 ) -> anyhow::Result<Vec<A::Group>> {
-    use std::sync::Arc;
+    use super::gpu_msm::GPU_MSM;
 
-    use super::gpu_msm::{GPU_MSM, convert_bases_to_gpu, convert_scalars_to_bigint};
+    if polys.is_empty() {
+        return Ok(vec![]);
+    }
 
-    let bases: &[ark_bn254::G1Affine] = unsafe { std::mem::transmute(g1_powers) };
-    let bases_gpu = Arc::new(convert_bases_to_gpu(bases));
-
-    let results: Vec<A::Group> = polys
+    // Collect scalar slices and find max length
+    let scalar_slices: Vec<&[ark_bn254::Fr]> = polys
         .iter()
         .map(|poly| {
             let coeffs = poly.borrow().evals_ref();
-            let scalars: &[ark_bn254::Fr] = unsafe { std::mem::transmute(coeffs) };
-            let msm_size = scalars.len();
-            let scalars_bigint = Arc::new(convert_scalars_to_bigint(&scalars[..msm_size]));
-
-            let bases_slice = Arc::new(bases_gpu[..msm_size].to_vec());
-
-            let result: ark_bn254::G1Projective = GPU_MSM
-                .lock()
-                .unwrap()
-                .msm_arc(bases_slice, scalars_bigint)
-                .map_err(|e| anyhow::anyhow!("GPU MSM error: {e}"))?;
-
-            let result_generic: A::Group = unsafe { std::mem::transmute_copy(&result) };
-            Ok(result_generic)
+            // SAFETY: A::ScalarField is ark_bn254::Fr (checked at call site via TypeId)
+            unsafe { std::mem::transmute::<&[A::ScalarField], &[ark_bn254::Fr]>(coeffs) }
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect();
 
-    Ok(results)
+    let max_len = scalar_slices.iter().map(|s| s.len()).max().unwrap_or(0);
+    let bases: &[ark_bn254::G1Affine] = unsafe { std::mem::transmute(g1_powers) };
+
+    // Use batch_msm - single lock acquisition, bases uploaded once
+    let results = GPU_MSM
+        .lock()
+        .unwrap()
+        .batch_msm(&bases[..max_len], &scalar_slices)
+        .map_err(|e| anyhow::anyhow!("GPU batch MSM error: {e}"))?;
+
+    // Convert results to generic type
+    let results_generic: Vec<A::Group> = results
+        .into_iter()
+        .map(|r| unsafe { std::mem::transmute_copy(&r) })
+        .collect();
+
+    Ok(results_generic)
 }
 
 pub fn msm<G: CurveGroup<ScalarField = F>, F: PrimeField>(

@@ -19,6 +19,7 @@ use ark_std::{cfg_iter, Zero};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 
 use super::gpu_msm::{convert_bases_to_gpu, GPU_MSM};
+use ec_gpu_gen::G1AffineM;
 use super::transcript::Transcript;
 use super::{
     kzg_open_batch, HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGVerifierKey,
@@ -134,7 +135,7 @@ pub static GPU_FUSED_POLY_COMMIT: std::sync::LazyLock<std::sync::Mutex<FusedPoly
 /// Batch commit using GPU - single call for multiple polynomials.
 ///
 /// This uploads bases to GPU once and processes all polynomials in a single
-/// GPU session, minimizing memory transfers.
+/// GPU session, minimizing memory transfers. Uses cached bases if available.
 pub fn gpu_batch_commit(
     g1_powers: &[G1Affine],
     polys: &[&DensePolynomial<Fr>],
@@ -149,11 +150,16 @@ pub fn gpu_batch_commit(
     // Collect all scalar sets (polynomial coefficients)
     let scalar_sets: Vec<&[Fr]> = polys.iter().map(|p| p.evals_ref()).collect();
 
-    // Use batch MSM - uploads bases once, processes all scalars in one GPU session
-    GPU_MSM
-        .lock()
-        .unwrap()
-        .batch_msm(&g1_powers[..max_len], &scalar_sets)
+    // Use batch MSM with caching - reuses bases if already cached
+    let mut gpu_msm = GPU_MSM.lock().unwrap();
+
+    // Cache bases if not already cached with sufficient length
+    if !gpu_msm.has_cached_bases(max_len) {
+        gpu_msm.cache_bases(&g1_powers[..max_len]);
+    }
+
+    gpu_msm
+        .batch_msm_cached(&g1_powers[..max_len], &scalar_sets)
         .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))
 }
 
@@ -204,14 +210,50 @@ pub fn gpu_fix_vars_and_commit(
         return Ok((vec![], vec![]));
     }
 
-    // Convert bases to GPU format
-    let bases_gpu = convert_bases_to_gpu(&g1_powers[..poly.len()]);
+    // Use cached bases from GPU_MSM to avoid redundant conversion
+    let mut gpu_msm = GPU_MSM.lock().unwrap();
+
+    // Ensure bases are cached (will reuse if already cached with sufficient length)
+    if !gpu_msm.has_cached_bases(poly.len()) {
+        gpu_msm.cache_bases(&g1_powers[..poly.len()]);
+    }
+
+    // Get cached bases reference - we know they exist now
+    let bases_gpu = gpu_msm.get_cached_bases_slice(poly.len())
+        .ok_or_else(|| anyhow::anyhow!("Failed to get cached bases"))?;
+
+    // Need to clone since we're passing to fused kernel which takes ownership
+    let bases_gpu_owned = bases_gpu.to_vec();
+    drop(gpu_msm); // Release lock before calling fused kernel
 
     let result = GPU_FUSED_POLY_COMMIT
         .lock()
         .unwrap()
         .get_or_init()?
-        .fix_vars_and_commit(poly, challenges, &bases_gpu)
+        .fix_vars_and_commit(poly, challenges, &bases_gpu_owned)
+        .map_err(|e| anyhow::anyhow!("GPU fused fix_vars_and_commit error: {e}"))?;
+
+    Ok((result.intermediates, result.commitments))
+}
+
+/// Fused GPU operation with pre-converted bases.
+///
+/// Use this when you have already converted bases to GPU format to avoid
+/// redundant conversion.
+pub fn gpu_fix_vars_and_commit_with_bases(
+    poly: &[Fr],
+    challenges: &[Fr],
+    bases_gpu: &[G1AffineM],
+) -> anyhow::Result<(Vec<Vec<Fr>>, Vec<G1Projective>)> {
+    if challenges.is_empty() {
+        return Ok((vec![], vec![]));
+    }
+
+    let result = GPU_FUSED_POLY_COMMIT
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .fix_vars_and_commit(poly, challenges, bases_gpu)
         .map_err(|e| anyhow::anyhow!("GPU fused fix_vars_and_commit error: {e}"))?;
 
     Ok((result.intermediates, result.commitments))
@@ -264,17 +306,60 @@ pub fn gpu_witness_poly_batch(f: &[Fr], points: &[Fr]) -> anyhow::Result<Vec<Vec
         .map_err(|e| anyhow::anyhow!("GPU witness_poly_batch error: {e}"))
 }
 
+/// Fused GPU operation: witness polynomial computation + MSM commit.
+///
+/// This computes witness polynomials for all points and commits to each in a single
+/// GPU session, avoiding the GPU→CPU→GPU round-trip of downloading witness polys
+/// then re-uploading for MSM.
+///
+/// Returns commitments to each witness polynomial (one per point).
+pub fn gpu_witness_poly_batch_and_commit(
+    poly: &[Fr],
+    points: &[Fr],
+    g1_powers: &[G1Affine],
+) -> anyhow::Result<Vec<G1Projective>> {
+    let witness_len = poly.len() - 1;
+
+    // Use cached bases from GPU_MSM
+    let mut gpu_msm = GPU_MSM.lock().unwrap();
+    if !gpu_msm.has_cached_bases(witness_len) {
+        gpu_msm.cache_bases(&g1_powers[..witness_len]);
+    }
+
+    let bases_gpu = gpu_msm
+        .get_cached_bases_slice(witness_len)
+        .ok_or_else(|| anyhow::anyhow!("Failed to get cached bases"))?;
+    let bases_gpu_owned = bases_gpu.to_vec();
+    drop(gpu_msm);
+
+    GPU_FUSED_POLY_COMMIT
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .witness_poly_batch_and_commit(poly, points, &bases_gpu_owned)
+        .map_err(|e| anyhow::anyhow!("GPU fused witness_poly_batch_and_commit error: {e}"))
+}
+
 // ============================================================================
 // GPU KZG Batch Open (Phase 3 Acceleration)
 // ============================================================================
 
 /// GPU-accelerated KZG batch open for HyperKZG Phase 3.
 ///
-/// This replaces the CPU `kzg_open_batch` by moving polynomial evaluations,
-/// linear combination, witness polynomial computation, and MSM to the GPU.
+/// This accelerates Phase 3 by using GPU for:
+/// - Witness polynomial computation (parallel across 3 evaluation points)
+/// - MSM for witness commitments (batched, uses cached bases)
+///
+/// CPU is still used for:
+/// - Polynomial evaluations: polynomials have different lengths (n, n/2, ..., 2)
+///   making GPU batching inefficient (would require padding to max length)
+/// - Linear combination: same reason, different-length polynomials
+///
+/// The GPU-accelerated operations (witness poly batch + MSM) dominate the runtime,
+/// so this hybrid approach is efficient.
 ///
 /// # Arguments
-/// * `f` - Intermediate polynomials from Phase 1
+/// * `f` - Intermediate polynomials from Phase 1 (lengths: n, n/2, n/4, ..., 2)
 /// * `u` - Evaluation points [r, -r, r²]
 /// * `pk` - Prover key containing G1 powers
 /// * `transcript` - Fiat-Shamir transcript
@@ -291,9 +376,10 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
     let k = f.len(); // Number of polynomials
     let t = u.len(); // Number of evaluation points (3 for HyperKZG)
 
-    // Step 1: Evaluate all polynomials at all points
-    // Note: Polynomials may have different lengths (n, n/2, n/4, ..., 2 in HyperKZG)
-    // so we evaluate each individually using eval_as_univariate
+    // Step 1: Evaluate all polynomials at all points (CPU)
+    // Note: Polynomials have different lengths (n, n/2, n/4, ..., 2 in HyperKZG)
+    // GPU batch eval requires same-length polynomials, so padding would be wasteful.
+    // Total evals = ell * 3 which is small compared to MSM work.
     let mut v = vec![vec![Fr::ZERO; k]; t];
     for (i, point) in u.iter().enumerate() {
         for (j, poly) in f.iter().enumerate() {
@@ -306,28 +392,20 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
     transcript.append_scalars::<Fr>(&scalars);
     let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(f.len());
 
-    // Step 3: Linear combination to get B polynomial
+    // Step 3: Linear combination to get B polynomial (CPU)
     // B(x) = sum(q^i * f_i(x)) for i = 0..k
-    // Use CPU linear_combination which handles variable-length polynomials
+    // GPU linear_combine requires same-length polynomials.
+    // The alternative (padding all to max length) would increase memory usage by ~2x.
     let poly_refs: Vec<&DensePolynomial<Fr>> = f.iter().collect();
     let b_poly = DensePolynomial::linear_combination(&poly_refs, &q_powers);
 
-    // Step 4: CPU witness polynomial computation (parallel across points)
-    // Witness computation is inherently sequential per-point (recurrence relation),
-    // but we can parallelize across the 3 points. GPU is inefficient here because
-    // it would only use 3 threads each doing O(n) sequential work.
+    // Step 4+5: Fused witness polynomial computation + MSM commit
+    // This keeps witness polynomials on GPU, avoiding a GPU→CPU→GPU round-trip.
+    // The witness polys are computed on GPU, immediately converted to scalar bytes,
+    // and committed via MSM - all without downloading to CPU.
     let b_evals = b_poly.evals_ref();
-    let witness_polys: Vec<DensePolynomial<Fr>> = cfg_iter!(u)
-        .map(|ui| {
-            let h = compute_witness_polynomial(b_evals, *ui);
-            DensePolynomial::new(h)
-        })
-        .collect();
-
-    // Step 5: GPU MSM for witness commitments
-    // MSM is highly parallel and benefits from GPU acceleration
     let g1_powers = pk.g1_powers();
-    let witness_len = witness_polys[0].len();
+    let witness_len = b_evals.len() - 1;
 
     anyhow::ensure!(
         witness_len <= g1_powers.len(),
@@ -336,10 +414,7 @@ pub fn kzg_open_batch_gpu<T: Transcript>(
         g1_powers.len()
     );
 
-    let witness_refs: Vec<&DensePolynomial<Fr>> = witness_polys.iter().collect();
-
-    // GPU MSM for all witness polynomials
-    let w_projective = gpu_batch_commit(g1_powers, &witness_refs)?;
+    let w_projective = gpu_witness_poly_batch_and_commit(b_evals, u, g1_powers)?;
     let w_aff: Vec<G1Affine> = w_projective.iter().map(|g| g.into_affine()).collect();
 
     // Step 6: Update transcript for verifier state consistency
