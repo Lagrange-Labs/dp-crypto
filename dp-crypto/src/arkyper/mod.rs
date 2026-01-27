@@ -173,7 +173,6 @@ fn compute_witness_polynomial<P: Pairing>(
     u: P::ScalarField,
 ) -> Vec<P::ScalarField> {
     let d = f.len();
-
     // Compute h(x) = f(x)/(x - u)
     let mut h = vec![P::ScalarField::zero(); d];
     for i in (1..d).rev() {
@@ -338,11 +337,11 @@ impl<P: Pairing> HyperKZG<P> {
         let n = poly.len();
         assert_eq!(n, 1 << ell); // Below we assume that n is a power of two
 
-        // Phase 1  -- create commitments com_1, ..., com_\ell
+        // Phase 1 -- create commitments com_1, ..., com_\ell
         // We do not compute final Pi (and its commitment) as it is constant and equals to 'eval'
         // also known to verifier, so can be derived on its side as well
         let mut polys: Vec<DensePolynomial<P::ScalarField>> = Vec::new();
-        polys.push(poly.clone());
+        polys.push(poly.shallow_clone());
         for i in 0..ell - 1 {
             let previous_poly: &DensePolynomial<P::ScalarField> = &polys[i];
             let pi_len = previous_poly.len() / 2;
