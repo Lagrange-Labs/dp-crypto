@@ -48,7 +48,7 @@ pub struct HyperKZGSRS<P: Pairing>(UniversalParams<P>);
 
 impl<P: Pairing> HyperKZGSRS<P> {
     pub fn setup<R: Rng + RngCore>(rng: &mut R, max_degree: usize) -> Self {
-        let params = KZG10::<P, UniPoly<P>>::setup(max_degree, true, rng).unwrap();
+        let params = KZG10::<P, UniPoly<P>>::setup(max_degree, false, rng).unwrap();
         Self(params)
     }
 
