@@ -94,18 +94,24 @@ impl GpuMsm {
             .map_err(|e| anyhow::anyhow!("GPU MSM failed: {e}"))
     }
 
-    /// Batch MSM: upload bases once, compute multiple MSMs with different scalar sets.
+    /// Batch MSM: compute multiple MSMs with different scalar sets against the same bases.
     ///
     /// All scalar sets must have the same length as `bases`.
-    /// This avoids redundant GPU base uploads compared to calling `msm_arc` in a loop.
     pub fn batch_msm(
-        &self,
+        &mut self,
         bases: &[G1AffineM],
         scalar_sets: &[Vec<<Fr as PrimeField>::BigInt>],
     ) -> anyhow::Result<Vec<G1Projective>> {
-        self.kernel
-            .batch_multiexp(bases, scalar_sets)
-            .map_err(|e| anyhow::anyhow!("GPU batch MSM failed: {e}"))
+        let bases_arc = Arc::new(bases.to_vec());
+        let mut results = Vec::with_capacity(scalar_sets.len());
+        for scalars in scalar_sets {
+            let result = self
+                .kernel
+                .multiexp(&self.pool, Arc::clone(&bases_arc), Arc::new(scalars.clone()), 0)
+                .map_err(|e| anyhow::anyhow!("GPU batch MSM failed: {e}"))?;
+            results.push(result);
+        }
+        Ok(results)
     }
 
 }

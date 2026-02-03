@@ -26,7 +26,7 @@ use crate::arkyper::interface::CommitmentScheme;
 use crate::poly::dense::DensePolynomial;
 use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
 use ec_gpu_gen::{
-    compute_work_units, program, rust_gpu_tools::Device, FusedPolyCommit, G1AffineM, Phase3Input,
+    compute_work_units, program, rust_gpu_tools::Device, FusedPolyCommit, Phase3Input,
     PolyOpsKernel,
 };
 
@@ -181,18 +181,6 @@ pub fn gpu_witness_poly(f: &[Fr], u: &Fr) -> anyhow::Result<Vec<Fr>> {
         .map_err(|e| anyhow::anyhow!("GPU witness_poly error: {e}"))
 }
 
-/// GPU-accelerated batch witness polynomial computation.
-///
-/// Computes witness polynomials h_i(x) = f(x)/(x - u_i) for multiple points u_i
-/// in a single GPU call.
-pub fn gpu_witness_poly_batch(f: &[Fr], points: &[Fr]) -> anyhow::Result<Vec<Vec<Fr>>> {
-    GPU_POLY_OPS
-        .lock()
-        .unwrap()
-        .get_or_init()?
-        .witness_poly_batch(f, points)
-        .map_err(|e| anyhow::anyhow!("GPU witness_poly_batch error: {e}"))
-}
 
 // ============================================================================
 // CPU Reference Operations (for comparison)
