@@ -96,6 +96,10 @@ harness = false
 name = "msm_bitlength"
 harness = false
 
+[[bench]]
+name = "cpu_vs_gpu"
+harness = false
+
 [[example]]
 name = "hyperkzg_gpu"
 required-features = ["cuda"]
