@@ -348,19 +348,9 @@ impl HyperKZGGpu<Bn254> {
                     transcript.append_scalars::<Fr>(&scalars);
                     let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(k);
 
-                    // Zero-pad polys for GPU linear_combine (all must be same length)
-                    let max_len = polys.iter().map(|p| p.len()).max().unwrap();
-                    let padded_polys: Vec<Vec<Fr>> = polys
-                        .iter()
-                        .map(|p| {
-                            let mut evals = p.evals_ref().to_vec();
-                            evals.resize(max_len, Fr::ZERO);
-                            evals
-                        })
-                        .collect();
-
+                    // No padded_polys needed — intermediate buffers are kept on GPU
+                    // and packed via copy_and_pad kernel, eliminating ~2.8GB CPU→GPU transfer.
                     Phase3Input {
-                        padded_polys,
                         lc_coeffs: q_powers,
                         eval_points: u,
                         intermediate_commitments_affine: coms_aff,
@@ -496,8 +486,8 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         _: Option<Self::OpeningProofHint>,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<Self::Proof> {
-        let eval = poly.evaluate(opening_point)?;
-        Self::open_gpu(setup, poly, opening_point, &eval, transcript)
+        // open_gpu ignores the eval parameter, so skip the expensive poly.evaluate()
+        Self::open_gpu(setup, poly, opening_point, &Fr::ZERO, transcript)
     }
 
     fn verify<ProofTranscript: Transcript>(
