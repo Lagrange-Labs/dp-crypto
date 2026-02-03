@@ -11,10 +11,10 @@
 
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use std::sync::Arc;
 
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
 use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
+use ark_ff::AdditiveGroup;
 
 use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
 use super::transcript::Transcript;
@@ -24,7 +24,11 @@ use super::{
 };
 use crate::arkyper::interface::CommitmentScheme;
 use crate::poly::dense::DensePolynomial;
-use ec_gpu_gen::{program, rust_gpu_tools::Device, PolyOpsKernel};
+use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
+use ec_gpu_gen::{
+    compute_work_units, program, rust_gpu_tools::Device, FusedPolyCommit, G1AffineM, Phase3Input,
+    PolyOpsKernel,
+};
 
 /// GPU-accelerated HyperKZG implementation.
 ///
@@ -92,38 +96,39 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 
 /// Batch commit using GPU - single call for multiple polynomials.
 ///
-/// This uploads all bases once and processes all polynomials in sequence,
-/// minimizing GPU memory transfers.
+/// Converts bases to GPU format, uploads all bases once, and processes
+/// all polynomials in sequence using `batch_multiexp`.
 pub fn gpu_batch_commit(
     g1_powers: &[G1Affine],
     polys: &[&DensePolynomial<Fr>],
 ) -> anyhow::Result<Vec<G1Projective>> {
+    let _span = tracing::debug_span!("gpu_batch_commit", n_polys = polys.len()).entered();
     if polys.is_empty() {
         return Ok(vec![]);
     }
 
-    // Pre-convert bases to GPU format once
     let max_len = polys.iter().map(|p| p.len()).max().unwrap_or(0);
-    let bases_gpu = Arc::new(convert_bases_to_gpu(&g1_powers[..max_len]));
+    let bases_gpu = {
+        let _span =
+            tracing::debug_span!("gpu_batch_commit::convert_bases", n_bases = max_len).entered();
+        convert_bases_to_gpu(&g1_powers[..max_len])
+    };
 
-    // Process all polynomials
-    let results: Vec<G1Projective> = polys
+    let scalar_sets: Vec<Vec<_>> = polys
         .iter()
         .map(|poly| {
             let coeffs = poly.evals_ref();
-            let msm_size = coeffs.len();
-            let scalars_bigint = Arc::new(convert_scalars_to_bigint(coeffs));
-            let bases_slice = Arc::new(bases_gpu[..msm_size].to_vec());
-
-            GPU_MSM
-                .lock()
-                .unwrap()
-                .msm_arc(bases_slice, scalars_bigint)
-                .map_err(|e| anyhow::anyhow!("GPU MSM error: {e}"))
+            let mut bigints = convert_scalars_to_bigint(coeffs);
+            bigints.resize(max_len, Default::default());
+            bigints
         })
-        .collect::<anyhow::Result<Vec<_>>>()?;
+        .collect();
 
-    Ok(results)
+    GPU_MSM
+        .lock()
+        .unwrap()
+        .batch_msm(&bases_gpu, &scalar_sets)
+        .map_err(|e| anyhow::anyhow!("GPU batch MSM error: {e}"))
 }
 
 /// GPU-accelerated fix_var operation.
@@ -176,6 +181,19 @@ pub fn gpu_witness_poly(f: &[Fr], u: &Fr) -> anyhow::Result<Vec<Fr>> {
         .map_err(|e| anyhow::anyhow!("GPU witness_poly error: {e}"))
 }
 
+/// GPU-accelerated batch witness polynomial computation.
+///
+/// Computes witness polynomials h_i(x) = f(x)/(x - u_i) for multiple points u_i
+/// in a single GPU call.
+pub fn gpu_witness_poly_batch(f: &[Fr], points: &[Fr]) -> anyhow::Result<Vec<Vec<Fr>>> {
+    GPU_POLY_OPS
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .witness_poly_batch(f, points)
+        .map_err(|e| anyhow::anyhow!("GPU witness_poly_batch error: {e}"))
+}
+
 // ============================================================================
 // CPU Reference Operations (for comparison)
 // ============================================================================
@@ -222,16 +240,53 @@ pub fn cpu_batch_commit(
 }
 
 // ============================================================================
-// HyperKZG GPU Open Implementation
+// HyperKZG GPU Fused Open Implementation
 // ============================================================================
 
+/// GPU kernel holder for fused poly-commit operations.
+/// This is lazily initialized when first needed.
+pub struct GpuFusedHolder {
+    fused: Option<FusedPolyCommit<Fr, GpuG1Affine>>,
+}
+
+impl GpuFusedHolder {
+    pub fn new() -> Self {
+        Self { fused: None }
+    }
+
+    pub fn get_or_init(&mut self) -> anyhow::Result<&FusedPolyCommit<Fr, GpuG1Affine>> {
+        if self.fused.is_none() {
+            let devices = Device::all();
+            if devices.is_empty() {
+                return Err(anyhow::anyhow!("No GPU devices found"));
+            }
+
+            let device = &devices[0];
+            let prog = program!(device)
+                .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
+            let wu = compute_work_units(device);
+
+            let fused = FusedPolyCommit::create(prog, wu)
+                .map_err(|e| anyhow::anyhow!("Failed to create FusedPolyCommit: {e}"))?;
+
+            self.fused = Some(fused);
+        }
+
+        Ok(self.fused.as_ref().unwrap())
+    }
+}
+
+pub static GPU_FUSED: std::sync::LazyLock<std::sync::Mutex<GpuFusedHolder>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(GpuFusedHolder::new()));
+
 impl HyperKZGGpu<Bn254> {
-    /// GPU-accelerated open operation.
+    /// GPU-accelerated open operation using fused GPU session.
     ///
-    /// This uses GPU for:
-    /// 1. Phase 1: Variable fixing (fix_var iterations)
-    /// 2. MSM for intermediate commitments
-    /// 3. KZG batch open witness computations
+    /// Runs the entire HyperKZG open in a single GPU session:
+    /// - Bases uploaded once and reused for Phase 2 (intermediate commits) and Phase 3 (witness commits)
+    /// - Scalar conversion happens on GPU (no CPU `convert_scalars_to_bigint`)
+    /// - Witness polynomials never leave GPU
+    /// - CPU transcript work runs inside the GPU session via callback
     pub fn open_gpu<ProofTranscript: Transcript>(
         pk: &HyperKZGProverKey<Bn254>,
         poly: &DensePolynomial<Fr>,
@@ -243,39 +298,103 @@ impl HyperKZGGpu<Bn254> {
         let n = poly.len();
         assert_eq!(n, 1 << ell);
 
-        // Phase 1: Create commitments using GPU fix_var
-        let mut polys: Vec<DensePolynomial<Fr>> = Vec::with_capacity(ell);
-        polys.push(poly.clone());
+        let _span = tracing::debug_span!("open_gpu::fused", ell, n).entered();
 
-        // Use GPU for all fix_var operations
+        // Convert bases to GPU format (CPU-side conversion, uploaded once inside fused_open)
+        let bases_gpu = {
+            let _span = tracing::debug_span!(
+                "open_gpu::convert_bases",
+                n_bases = pk.g1_powers().len()
+            )
+            .entered();
+            convert_bases_to_gpu(pk.g1_powers())
+        };
+
         let challenges = &point[..ell - 1];
-        if !challenges.is_empty() {
-            let intermediates = gpu_fix_vars_with_intermediates(poly.evals_ref(), challenges)?;
-            for intermediate in intermediates {
-                polys.push(DensePolynomial::new(intermediate));
-            }
-        }
 
-        assert_eq!(polys.len(), ell);
-        assert_eq!(polys[ell - 1].len(), 2);
+        // Clone poly evals for use inside the callback
+        let poly_evals = poly.evals_ref().to_vec();
 
-        // Commit to intermediate polynomials using GPU MSM
-        let poly_refs: Vec<&DensePolynomial<Fr>> = polys[1..].iter().collect();
-        let coms = gpu_batch_commit(pk.g1_powers(), &poly_refs)?;
-        let coms_aff: Vec<G1Affine> = coms.iter().map(|c| c.into_affine()).collect();
+        let result = GPU_FUSED
+            .lock()
+            .unwrap()
+            .get_or_init()?
+            .fused_open(
+                poly.evals_ref(),
+                challenges,
+                &bases_gpu,
+                |intermediates, commitments| {
+                    // === CPU work inside the GPU session ===
 
-        // Phase 2: Get challenge from transcript
-        transcript.append_points(&coms_aff);
-        let r: Fr = transcript.challenge_scalar();
-        let u = vec![r, -r, r * r];
+                    // Build all polynomials (original + intermediates) for eval
+                    let mut polys: Vec<DensePolynomial<Fr>> = Vec::with_capacity(ell);
+                    polys.push(DensePolynomial::new(poly_evals.clone()));
+                    for interm in intermediates {
+                        polys.push(DensePolynomial::new(interm.clone()));
+                    }
 
-        // Phase 3: KZG batch open (uses existing implementation)
-        let (w, v) = kzg_open_batch(&polys, &u, pk, transcript)?;
+                    assert_eq!(polys.len(), ell);
+                    assert_eq!(polys[ell - 1].len(), 2);
+
+                    // Convert commitments to affine for transcript
+                    let coms_aff: Vec<G1Affine> =
+                        commitments.iter().map(|c| c.into_affine()).collect();
+
+                    // Transcript: append intermediate commitments and get challenge
+                    transcript.append_points(&coms_aff);
+                    let r: Fr = transcript.challenge_scalar();
+                    let u = vec![r, -r, r * r];
+
+                    // Evaluate f_i(u_j) on CPU
+                    let k = polys.len();
+                    let t = u.len();
+                    let mut v = vec![vec![Fr::ZERO; k]; t];
+                    for (i, v_i) in v.iter_mut().enumerate() {
+                        for (v_ij, poly) in v_i.iter_mut().zip(polys.iter()) {
+                            *v_ij = poly.eval_as_univariate(&u[i]);
+                        }
+                    }
+
+                    // Transcript: append evals and get q_powers
+                    let scalars: Vec<&Fr> = v.iter().flatten().collect();
+                    transcript.append_scalars::<Fr>(&scalars);
+                    let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(k);
+
+                    // Zero-pad polys for GPU linear_combine (all must be same length)
+                    let max_len = polys.iter().map(|p| p.len()).max().unwrap();
+                    let padded_polys: Vec<Vec<Fr>> = polys
+                        .iter()
+                        .map(|p| {
+                            let mut evals = p.evals_ref().to_vec();
+                            evals.resize(max_len, Fr::ZERO);
+                            evals
+                        })
+                        .collect();
+
+                    Phase3Input {
+                        padded_polys,
+                        lc_coeffs: q_powers,
+                        eval_points: u,
+                        intermediate_commitments_affine: coms_aff,
+                        evaluations: v,
+                    }
+                },
+            )
+            .map_err(|e| anyhow::anyhow!("GPU fused_open error: {e}"))?;
+
+        // Final transcript work (witness commitments)
+        let w_aff: Vec<G1Affine> = result
+            .witness_commitments
+            .iter()
+            .map(|g| g.into_affine())
+            .collect();
+        transcript.append_points(&w_aff);
+        let _d_0: Fr = transcript.challenge_scalar();
 
         Ok(HyperKZGProof {
-            coms: coms_aff,
-            w,
-            v,
+            coms: result.intermediate_commitments_affine,
+            w: w_aff,
+            v: result.evaluations,
         })
     }
 
