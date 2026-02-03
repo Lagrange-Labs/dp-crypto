@@ -1200,7 +1200,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu"
 version = "0.2.0"
-source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#6d8f1990b1602d7cf5462a8d37a6f6b6969c6701"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#ea6ea295cb133ef7a513cc9f2856218a82a08681"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1212,7 +1212,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu-gen"
 version = "0.7.1"
-source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#6d8f1990b1602d7cf5462a8d37a6f6b6969c6701"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#ea6ea295cb133ef7a513cc9f2856218a82a08681"
 dependencies = [
  "ark-bn254",
  "ark-ec",
