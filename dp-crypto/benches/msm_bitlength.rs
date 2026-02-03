@@ -97,10 +97,11 @@ mod cpu_msm_bitlength {
 
         let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
         let (pk, _): (HyperKZGProverKey<Bn254>, _) = srs.trim(n);
+        let bases = &pk.g1_powers()[..n];
         let scalars = generate_small_scalars(n, 53, &mut rng);
 
         b.bench_local(|| {
-            G1Projective::msm(pk.g1_powers(), &scalars).expect("CPU MSM failed")
+            G1Projective::msm(bases, &scalars).expect("CPU MSM failed")
         })
     }
 
@@ -111,10 +112,11 @@ mod cpu_msm_bitlength {
 
         let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
         let (pk, _): (HyperKZGProverKey<Bn254>, _) = srs.trim(n);
+        let bases = &pk.g1_powers()[..n];
         let scalars: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
 
         b.bench_local(|| {
-            G1Projective::msm(pk.g1_powers(), &scalars).expect("CPU MSM failed")
+            G1Projective::msm(bases, &scalars).expect("CPU MSM failed")
         })
     }
 }
