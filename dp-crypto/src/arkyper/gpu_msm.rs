@@ -97,17 +97,17 @@ impl GpuMsm {
     /// Batch MSM: compute multiple MSMs with different scalar sets against the same bases.
     ///
     /// All scalar sets must have the same length as `bases`.
+    /// Accepts `Arc<Vec<G1AffineM>>` to avoid copying the bases (which can be ~256MB).
     pub fn batch_msm(
         &mut self,
-        bases: &[G1AffineM],
+        bases: Arc<Vec<G1AffineM>>,
         scalar_sets: &[Vec<<Fr as PrimeField>::BigInt>],
     ) -> anyhow::Result<Vec<G1Projective>> {
-        let bases_arc = Arc::new(bases.to_vec());
         let mut results = Vec::with_capacity(scalar_sets.len());
         for scalars in scalar_sets {
             let result = self
                 .kernel
-                .multiexp(&self.pool, Arc::clone(&bases_arc), Arc::new(scalars.clone()), 0)
+                .multiexp(&self.pool, Arc::clone(&bases), Arc::new(scalars.clone()), 0)
                 .map_err(|e| anyhow::anyhow!("GPU batch MSM failed: {e}"))?;
             results.push(result);
         }

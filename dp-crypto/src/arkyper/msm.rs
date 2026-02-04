@@ -71,7 +71,7 @@ pub fn batch_poly_msm_gpu_bn254<'a, A: AffineRepr>(
         .map(|p| p.borrow().evals_ref().len())
         .max()
         .unwrap_or(0);
-    let bases_gpu = convert_bases_to_gpu(&bases[..max_len]);
+    let bases_gpu = std::sync::Arc::new(convert_bases_to_gpu(&bases[..max_len]));
 
     // Use batch_multiexp to upload bases to GPU only once.
     // All scalar sets must match bases length, so zero-pad shorter ones.
@@ -89,7 +89,7 @@ pub fn batch_poly_msm_gpu_bn254<'a, A: AffineRepr>(
     let results: Vec<ark_bn254::G1Projective> = GPU_MSM
         .lock()
         .unwrap()
-        .batch_msm(&bases_gpu, &scalar_sets)
+        .batch_msm(bases_gpu, &scalar_sets)
         .map_err(|e| anyhow::anyhow!("GPU batch MSM error: {e}"))?;
 
     // Transmute results to generic type

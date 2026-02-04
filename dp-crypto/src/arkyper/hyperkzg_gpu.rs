@@ -11,6 +11,7 @@
 
 use std::borrow::Borrow;
 use std::marker::PhantomData;
+use std::sync::Arc;
 
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
 use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
@@ -29,6 +30,19 @@ use ec_gpu_gen::{
     compute_work_units, program, rust_gpu_tools::Device, FusedPolyCommit, Phase3Input,
     PolyOpsKernel,
 };
+
+/// Evaluate a polynomial (given as a coefficient slice) at a point using Horner's method.
+/// Equivalent to `DensePolynomial::eval_as_univariate` but operates on `&[F]` directly,
+/// avoiding the need to wrap data in a `DensePolynomial`.
+fn eval_as_univariate(coeffs: &[Fr], r: &Fr) -> Fr {
+    let mut output = coeffs[0];
+    let mut rpow = *r;
+    for z in coeffs.iter().skip(1) {
+        output += rpow * z;
+        rpow *= r;
+    }
+    output
+}
 
 /// GPU-accelerated HyperKZG implementation.
 ///
@@ -111,7 +125,7 @@ pub fn gpu_batch_commit(
     let bases_gpu = {
         let _span =
             tracing::debug_span!("gpu_batch_commit::convert_bases", n_bases = max_len).entered();
-        convert_bases_to_gpu(&g1_powers[..max_len])
+        Arc::new(convert_bases_to_gpu(&g1_powers[..max_len]))
     };
 
     let scalar_sets: Vec<Vec<_>> = polys
@@ -127,7 +141,7 @@ pub fn gpu_batch_commit(
     GPU_MSM
         .lock()
         .unwrap()
-        .batch_msm(&bases_gpu, &scalar_sets)
+        .batch_msm(bases_gpu, &scalar_sets)
         .map_err(|e| anyhow::anyhow!("GPU batch MSM error: {e}"))
 }
 
@@ -300,8 +314,8 @@ impl HyperKZGGpu<Bn254> {
 
         let challenges = &point[..ell - 1];
 
-        // Clone poly evals for use inside the callback
-        let poly_evals = poly.evals_ref().to_vec();
+        // Keep a reference to poly evals for the callback (no clone needed)
+        let poly_evals = poly.evals_ref();
 
         let result = GPU_FUSED
             .lock()
@@ -314,15 +328,16 @@ impl HyperKZGGpu<Bn254> {
                 |intermediates, commitments| {
                     // === CPU work inside the GPU session ===
 
-                    // Build all polynomials (original + intermediates) for eval
-                    let mut polys: Vec<DensePolynomial<Fr>> = Vec::with_capacity(ell);
-                    polys.push(DensePolynomial::new(poly_evals.clone()));
+                    // Build slice references to all polynomials (original + intermediates)
+                    // Avoids cloning into DensePolynomial wrappers.
+                    let mut poly_slices: Vec<&[Fr]> = Vec::with_capacity(ell);
+                    poly_slices.push(poly_evals);
                     for interm in intermediates {
-                        polys.push(DensePolynomial::new(interm.clone()));
+                        poly_slices.push(interm.as_slice());
                     }
 
-                    assert_eq!(polys.len(), ell);
-                    assert_eq!(polys[ell - 1].len(), 2);
+                    assert_eq!(poly_slices.len(), ell);
+                    assert_eq!(poly_slices[ell - 1].len(), 2);
 
                     // Convert commitments to affine for transcript
                     let coms_aff: Vec<G1Affine> =
@@ -333,13 +348,13 @@ impl HyperKZGGpu<Bn254> {
                     let r: Fr = transcript.challenge_scalar();
                     let u = vec![r, -r, r * r];
 
-                    // Evaluate f_i(u_j) on CPU
-                    let k = polys.len();
+                    // Evaluate f_i(u_j) on CPU using Horner's method on raw slices
+                    let k = poly_slices.len();
                     let t = u.len();
                     let mut v = vec![vec![Fr::ZERO; k]; t];
                     for (i, v_i) in v.iter_mut().enumerate() {
-                        for (v_ij, poly) in v_i.iter_mut().zip(polys.iter()) {
-                            *v_ij = poly.eval_as_univariate(&u[i]);
+                        for (v_ij, coeffs) in v_i.iter_mut().zip(poly_slices.iter()) {
+                            *v_ij = eval_as_univariate(coeffs, &u[i]);
                         }
                     }
 
