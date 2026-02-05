@@ -11,13 +11,11 @@
 
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use std::sync::Arc;
-
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
 use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
 use ark_ff::AdditiveGroup;
 
-use super::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
+use super::gpu_msm::convert_bases_to_gpu;
 use super::transcript::Transcript;
 use super::{
     kzg_open_batch, HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGVerifierKey,
@@ -110,8 +108,9 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 
 /// Batch commit using GPU - single call for multiple polynomials.
 ///
-/// Converts bases to GPU format, uploads all bases once, and processes
-/// all polynomials in sequence using `batch_multiexp`.
+/// Uses the sort-based MSM pipeline via `FusedPolyCommit::batch_commit`,
+/// which is significantly faster than the old per-thread bucket approach.
+/// Bases are uploaded once and Montgomery→standard conversion happens on GPU.
 pub fn gpu_batch_commit(
     g1_powers: &[G1Affine],
     polys: &[&DensePolynomial<Fr>],
@@ -125,24 +124,19 @@ pub fn gpu_batch_commit(
     let bases_gpu = {
         let _span =
             tracing::debug_span!("gpu_batch_commit::convert_bases", n_bases = max_len).entered();
-        Arc::new(convert_bases_to_gpu(&g1_powers[..max_len]))
+        convert_bases_to_gpu(&g1_powers[..max_len])
     };
 
-    let scalar_sets: Vec<Vec<_>> = polys
-        .iter()
-        .map(|poly| {
-            let coeffs = poly.evals_ref();
-            let mut bigints = convert_scalars_to_bigint(coeffs);
-            bigints.resize(max_len, Default::default());
-            bigints
-        })
-        .collect();
+    // Pass original poly slices directly — batch_commit handles zero-padding
+    // internally per-poly, avoiding bulk allocation of all padded polys at once.
+    let poly_slices: Vec<&[Fr]> = polys.iter().map(|p| p.evals_ref()).collect();
 
-    GPU_MSM
+    GPU_FUSED
         .lock()
         .unwrap()
-        .batch_msm(bases_gpu, &scalar_sets)
-        .map_err(|e| anyhow::anyhow!("GPU batch MSM error: {e}"))
+        .get_or_init()?
+        .batch_commit(&poly_slices, &bases_gpu)
+        .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))
 }
 
 /// GPU-accelerated fix_var operation.
