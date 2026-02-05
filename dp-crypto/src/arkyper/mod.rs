@@ -30,7 +30,7 @@ pub mod gpu_msm;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
 pub mod hyperkzg_gpu;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
-pub use hyperkzg_gpu::HyperKZGGpu;
+pub use hyperkzg_gpu::{gpu_setup, HyperKZGGpu};
 pub mod interface;
 pub mod msm;
 pub mod transcript;
@@ -49,6 +49,12 @@ pub struct HyperKZGSRS<P: Pairing>(UniversalParams<P>);
 impl<P: Pairing> HyperKZGSRS<P> {
     pub fn setup<R: Rng + RngCore>(rng: &mut R, max_degree: usize) -> Self {
         let params = KZG10::<P, UniPoly<P>>::setup(max_degree, false, rng).unwrap();
+        Self(params)
+    }
+
+    /// Create HyperKZGSRS from pre-computed UniversalParams.
+    /// Used by GPU-accelerated setup.
+    pub fn from_params(params: UniversalParams<P>) -> Self {
         Self(params)
     }
 

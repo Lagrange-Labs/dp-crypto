@@ -12,8 +12,9 @@
 use std::borrow::Borrow;
 use std::marker::PhantomData;
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
-use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
+use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, VariableBaseMSM};
 use ark_ff::AdditiveGroup;
+use std::ops::Mul;
 
 use super::gpu_msm::convert_bases_to_gpu;
 use super::transcript::Transcript;
@@ -274,6 +275,109 @@ impl GpuFusedHolder {
 
 pub static GPU_FUSED: std::sync::LazyLock<std::sync::Mutex<GpuFusedHolder>> =
     std::sync::LazyLock::new(|| std::sync::Mutex::new(GpuFusedHolder::new()));
+
+// ============================================================================
+// GPU-Accelerated SRS Setup
+// ============================================================================
+
+/// GPU-accelerated SRS (trusted setup) generation.
+///
+/// Computes `[G, tau*G, tau^2*G, ..., tau^n*G]` and `[gamma*G, gamma*tau*G, ...]`
+/// using GPU batch scalar multiplication, which is significantly faster than
+/// the CPU sequential approach for large degrees.
+///
+/// # Arguments
+/// * `rng` - Random number generator for generating tau, gamma, and base points
+/// * `max_degree` - Maximum polynomial degree (number of G1 powers = max_degree + 1)
+///
+/// # Returns
+/// `HyperKZGSRS<Bn254>` containing the computed powers.
+pub fn gpu_setup<R: ark_std::rand::Rng + ark_std::rand::RngCore>(
+    rng: &mut R,
+    max_degree: usize,
+) -> anyhow::Result<super::HyperKZGSRS<Bn254>> {
+    use ark_ec::CurveGroup;
+    use ark_ff::{One, UniformRand};
+    use ark_poly_commit::kzg10::UniversalParams;
+    use std::collections::BTreeMap;
+
+    if max_degree < 1 {
+        return Err(anyhow::anyhow!("Degree must be at least 1"));
+    }
+
+    let _span = tracing::debug_span!("gpu_setup", max_degree).entered();
+
+    // Generate random secrets (same as arkworks KZG10::setup)
+    let beta = Fr::rand(rng); // tau in our notation
+    let g = G1Projective::rand(rng);
+    let gamma_g = G1Projective::rand(rng);
+    let h = ark_bn254::G2Projective::rand(rng);
+
+    // Compute powers of beta: [1, beta, beta^2, ..., beta^(max_degree+1)]
+    let powers_of_beta_span = tracing::debug_span!("compute_powers_of_beta").entered();
+    let mut powers_of_beta = vec![Fr::one()];
+    let mut cur = beta;
+    for _ in 0..=max_degree {
+        powers_of_beta.push(cur);
+        cur *= &beta;
+    }
+    drop(powers_of_beta_span);
+
+    // Convert base point to GPU format
+    let g_affine: G1Affine = g.into_affine();
+    let g_gpu: GpuG1Affine = GpuG1Affine::from(g_affine);
+
+    // GPU batch scalar multiplication for powers_of_g
+    let powers_of_g_span = tracing::debug_span!("gpu_batch_scalar_mul_powers_of_g").entered();
+    let powers_of_g_gpu = GPU_FUSED
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .batch_scalar_mul(&g_gpu, &powers_of_beta[0..max_degree + 1])
+        .map_err(|e| anyhow::anyhow!("GPU batch_scalar_mul error: {e}"))?;
+    let powers_of_g: Vec<G1Affine> = powers_of_g_gpu
+        .into_iter()
+        .map(|p| G1Affine::from(p))
+        .collect();
+    drop(powers_of_g_span);
+
+    // GPU batch scalar multiplication for powers_of_gamma_g
+    let gamma_g_affine: G1Affine = gamma_g.into_affine();
+    let gamma_g_gpu: GpuG1Affine = GpuG1Affine::from(gamma_g_affine);
+
+    let powers_of_gamma_g_span =
+        tracing::debug_span!("gpu_batch_scalar_mul_powers_of_gamma_g").entered();
+    let powers_of_gamma_g_gpu = GPU_FUSED
+        .lock()
+        .unwrap()
+        .get_or_init()?
+        .batch_scalar_mul(&gamma_g_gpu, &powers_of_beta)
+        .map_err(|e| anyhow::anyhow!("GPU batch_scalar_mul error: {e}"))?;
+    let powers_of_gamma_g: BTreeMap<usize, G1Affine> = powers_of_gamma_g_gpu
+        .into_iter()
+        .enumerate()
+        .map(|(i, p)| (i, G1Affine::from(p)))
+        .collect();
+    drop(powers_of_gamma_g_span);
+
+    // G2 computations (small, done on CPU)
+    let h_affine = h.into_affine();
+    let beta_h = h.into_affine().mul(beta).into_affine();
+    let prepared_h = h_affine.into();
+    let prepared_beta_h = beta_h.into();
+
+    let params = UniversalParams {
+        powers_of_g,
+        powers_of_gamma_g,
+        h: h_affine,
+        beta_h,
+        neg_powers_of_h: BTreeMap::new(), // Not used in HyperKZG
+        prepared_h,
+        prepared_beta_h,
+    };
+
+    Ok(super::HyperKZGSRS::from_params(params))
+}
 
 impl HyperKZGGpu<Bn254> {
     /// GPU-accelerated open operation using fused GPU session.
