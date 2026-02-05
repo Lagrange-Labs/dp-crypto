@@ -329,16 +329,12 @@ pub fn gpu_setup<R: ark_std::rand::Rng + ark_std::rand::RngCore>(
 
     // GPU batch scalar multiplication for powers_of_g
     let powers_of_g_span = tracing::debug_span!("gpu_batch_scalar_mul_powers_of_g").entered();
-    let powers_of_g_gpu = GPU_FUSED
+    let powers_of_g: Vec<G1Affine> = GPU_FUSED
         .lock()
         .unwrap()
         .get_or_init()?
         .batch_scalar_mul(&g_gpu, &powers_of_beta[0..max_degree + 1])
         .map_err(|e| anyhow::anyhow!("GPU batch_scalar_mul error: {e}"))?;
-    let powers_of_g: Vec<G1Affine> = powers_of_g_gpu
-        .into_iter()
-        .map(|p| G1Affine::from(p))
-        .collect();
     drop(powers_of_g_span);
 
     // GPU batch scalar multiplication for powers_of_gamma_g
@@ -347,16 +343,14 @@ pub fn gpu_setup<R: ark_std::rand::Rng + ark_std::rand::RngCore>(
 
     let powers_of_gamma_g_span =
         tracing::debug_span!("gpu_batch_scalar_mul_powers_of_gamma_g").entered();
-    let powers_of_gamma_g_gpu = GPU_FUSED
+    let powers_of_gamma_g: BTreeMap<usize, G1Affine> = GPU_FUSED
         .lock()
         .unwrap()
         .get_or_init()?
         .batch_scalar_mul(&gamma_g_gpu, &powers_of_beta)
-        .map_err(|e| anyhow::anyhow!("GPU batch_scalar_mul error: {e}"))?;
-    let powers_of_gamma_g: BTreeMap<usize, G1Affine> = powers_of_gamma_g_gpu
+        .map_err(|e| anyhow::anyhow!("GPU batch_scalar_mul error: {e}"))?
         .into_iter()
         .enumerate()
-        .map(|(i, p)| (i, G1Affine::from(p)))
         .collect();
     drop(powers_of_gamma_g_span);
 
