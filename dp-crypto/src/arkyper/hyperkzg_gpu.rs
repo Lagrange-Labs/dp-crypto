@@ -12,7 +12,7 @@
 use std::borrow::Borrow;
 use std::marker::PhantomData;
 use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
-use ark_ec::{pairing::Pairing, AffineRepr, CurveGroup, VariableBaseMSM};
+use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
 use ark_ff::AdditiveGroup;
 use std::ops::Mul;
 
