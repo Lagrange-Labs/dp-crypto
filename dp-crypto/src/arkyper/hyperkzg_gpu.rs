@@ -244,11 +244,28 @@ pub fn cpu_batch_commit(
 /// This is lazily initialized when first needed.
 pub struct GpuFusedHolder {
     fused: Option<FusedPolyCommit<Fr, GpuG1Affine>>,
+    cached_bases_gpu: Option<(usize, Vec<GpuG1Affine>)>,
 }
 
 impl GpuFusedHolder {
     pub fn new() -> Self {
-        Self { fused: None }
+        Self {
+            fused: None,
+            cached_bases_gpu: None,
+        }
+    }
+
+    pub fn get_or_convert_bases(&mut self, bases: &[G1Affine]) -> &[GpuG1Affine] {
+        if self
+            .cached_bases_gpu
+            .as_ref()
+            .map_or(true, |(len, _)| *len != bases.len())
+        {
+            let _span =
+                tracing::debug_span!("convert_bases_to_gpu", n_bases = bases.len()).entered();
+            self.cached_bases_gpu = Some((bases.len(), convert_bases_to_gpu(bases)));
+        }
+        &self.cached_bases_gpu.as_ref().unwrap().1
     }
 
     pub fn get_or_init(&mut self) -> anyhow::Result<&FusedPolyCommit<Fr, GpuG1Affine>> {
@@ -394,79 +411,78 @@ impl HyperKZGGpu<Bn254> {
 
         let _span = tracing::debug_span!("open_gpu::fused", ell, n).entered();
 
-        // Convert bases to GPU format (CPU-side conversion, uploaded once inside fused_open)
-        let bases_gpu = {
-            let _span = tracing::debug_span!(
-                "open_gpu::convert_bases",
-                n_bases = pk.g1_powers().len()
-            )
-            .entered();
-            convert_bases_to_gpu(pk.g1_powers())
-        };
-
         let challenges = &point[..ell - 1];
 
         // Keep a reference to poly evals for the callback (no clone needed)
         let poly_evals = poly.evals_ref();
 
-        let result = GPU_FUSED
-            .lock()
-            .unwrap()
-            .get_or_init()?
-            .fused_open(
-                poly.evals_ref(),
-                challenges,
-                &bases_gpu,
-                pk.g1_powers(),
-                |intermediates, commitments| {
-                    // === CPU work inside the GPU session ===
+        // Single lock scope: get cached bases (owned copy) then run fused_open
+        let result = {
+            let mut guard = GPU_FUSED.lock().unwrap();
+            let bases_gpu = guard.get_or_convert_bases(pk.g1_powers()).to_vec();
+            guard
+                .get_or_init()?
+                .fused_open(
+                    poly.evals_ref(),
+                    challenges,
+                    &bases_gpu,
+                    pk.g1_powers(),
+                    |intermediates, commitments| {
+                        // === CPU work inside the GPU session ===
 
-                    // Build slice references to all polynomials (original + intermediates)
-                    // Avoids cloning into DensePolynomial wrappers.
-                    let mut poly_slices: Vec<&[Fr]> = Vec::with_capacity(ell);
-                    poly_slices.push(poly_evals);
-                    for interm in intermediates {
-                        poly_slices.push(interm.as_slice());
-                    }
-
-                    assert_eq!(poly_slices.len(), ell);
-                    assert_eq!(poly_slices[ell - 1].len(), 2);
-
-                    // Convert commitments to affine for transcript
-                    let coms_aff: Vec<G1Affine> =
-                        commitments.iter().map(|c| c.into_affine()).collect();
-
-                    // Transcript: append intermediate commitments and get challenge
-                    transcript.append_points(&coms_aff);
-                    let r: Fr = transcript.challenge_scalar();
-                    let u = vec![r, -r, r * r];
-
-                    // Evaluate f_i(u_j) on CPU using Horner's method on raw slices
-                    let k = poly_slices.len();
-                    let t = u.len();
-                    let mut v = vec![vec![Fr::ZERO; k]; t];
-                    for (i, v_i) in v.iter_mut().enumerate() {
-                        for (v_ij, coeffs) in v_i.iter_mut().zip(poly_slices.iter()) {
-                            *v_ij = eval_as_univariate(coeffs, &u[i]);
+                        // Build slice references to all polynomials (original + intermediates)
+                        // Avoids cloning into DensePolynomial wrappers.
+                        let mut poly_slices: Vec<&[Fr]> = Vec::with_capacity(ell);
+                        poly_slices.push(poly_evals);
+                        for interm in intermediates {
+                            poly_slices.push(interm.as_slice());
                         }
-                    }
 
-                    // Transcript: append evals and get q_powers
-                    let scalars: Vec<&Fr> = v.iter().flatten().collect();
-                    transcript.append_scalars::<Fr>(&scalars);
-                    let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(k);
+                        assert_eq!(poly_slices.len(), ell);
+                        assert_eq!(poly_slices[ell - 1].len(), 2);
 
-                    // No padded_polys needed — intermediate buffers are kept on GPU
-                    // and packed via copy_and_pad kernel, eliminating ~2.8GB CPU→GPU transfer.
-                    Phase3Input {
-                        lc_coeffs: q_powers,
-                        eval_points: u,
-                        intermediate_commitments_affine: coms_aff,
-                        evaluations: v,
-                    }
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("GPU fused_open error: {e}"))?;
+                        // Convert commitments to affine for transcript
+                        let coms_aff: Vec<G1Affine> =
+                            commitments.iter().map(|c| c.into_affine()).collect();
+
+                        // Transcript: append intermediate commitments and get challenge
+                        transcript.append_points(&coms_aff);
+                        let r: Fr = transcript.challenge_scalar();
+                        let u = vec![r, -r, r * r];
+
+                        // Evaluate f_i(u_j) on CPU using Horner's method on raw slices,
+                        // parallelized with rayon for large polynomial counts.
+                        let k = poly_slices.len();
+                        let t = u.len();
+                        let mut v = vec![vec![Fr::ZERO; k]; t];
+                        {
+                            use rayon::prelude::*;
+                            v.par_iter_mut().enumerate().for_each(|(i, v_i)| {
+                                v_i.par_iter_mut()
+                                    .zip(poly_slices.par_iter())
+                                    .for_each(|(v_ij, coeffs)| {
+                                        *v_ij = eval_as_univariate(coeffs, &u[i]);
+                                    });
+                            });
+                        }
+
+                        // Transcript: append evals and get q_powers
+                        let scalars: Vec<&Fr> = v.iter().flatten().collect();
+                        transcript.append_scalars::<Fr>(&scalars);
+                        let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(k);
+
+                        // No padded_polys needed — intermediate buffers are kept on GPU
+                        // and packed via copy_and_pad kernel, eliminating ~2.8GB CPU→GPU transfer.
+                        Phase3Input {
+                            lc_coeffs: q_powers,
+                            eval_points: u,
+                            intermediate_commitments_affine: coms_aff,
+                            evaluations: v,
+                        }
+                    },
+                )
+                .map_err(|e| anyhow::anyhow!("GPU fused_open error: {e}"))?
+        };
 
         // Final transcript work (witness commitments)
         let w_aff: Vec<G1Affine> = result
