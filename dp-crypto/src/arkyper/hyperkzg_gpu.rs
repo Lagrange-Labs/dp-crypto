@@ -417,6 +417,7 @@ impl HyperKZGGpu<Bn254> {
                 poly.evals_ref(),
                 challenges,
                 &bases_gpu,
+                pk.g1_powers(),
                 |intermediates, commitments| {
                     // === CPU work inside the GPU session ===
 
