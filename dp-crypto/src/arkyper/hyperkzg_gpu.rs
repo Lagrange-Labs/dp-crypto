@@ -26,7 +26,7 @@ use crate::arkyper::interface::CommitmentScheme;
 use crate::poly::dense::DensePolynomial;
 use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
 use ec_gpu_gen::{
-    compute_work_units, program, rust_gpu_tools::Device, FusedPolyCommit, Phase3Input,
+    compute_work_units, program, rust_gpu_tools::Device, FusedPolyCommit, G1AffineM, Phase3Input,
     PolyOpsKernel,
 };
 
@@ -244,7 +244,7 @@ pub fn cpu_batch_commit(
 /// This is lazily initialized when first needed.
 pub struct GpuFusedHolder {
     fused: Option<FusedPolyCommit<Fr, GpuG1Affine>>,
-    cached_bases_gpu: Option<(usize, Vec<GpuG1Affine>)>,
+    cached_bases_gpu: Option<(usize, Vec<G1AffineM>)>,
 }
 
 impl GpuFusedHolder {
@@ -255,7 +255,7 @@ impl GpuFusedHolder {
         }
     }
 
-    pub fn get_or_convert_bases(&mut self, bases: &[G1Affine]) -> &[GpuG1Affine] {
+    pub fn get_or_convert_bases(&mut self, bases: &[G1Affine]) -> &[G1AffineM] {
         if self
             .cached_bases_gpu
             .as_ref()
