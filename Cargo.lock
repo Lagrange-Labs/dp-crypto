@@ -1200,7 +1200,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu"
 version = "0.2.0"
-source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#df7a169f6c73e40bd540c1541d398f30ed21a710"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#6d214b3ba73c58c908ce4f3da60f909d2b1581bc"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -1212,7 +1212,7 @@ dependencies = [
 [[package]]
 name = "ec-gpu-gen"
 version = "0.7.1"
-source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#df7a169f6c73e40bd540c1541d398f30ed21a710"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#6d214b3ba73c58c908ce4f3da60f909d2b1581bc"
 dependencies = [
  "ark-bn254",
  "ark-ec",
@@ -3429,7 +3429,7 @@ dependencies = [
 [[package]]
 name = "rust-gpu-tools"
 version = "0.7.2"
-source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#df7a169f6c73e40bd540c1541d398f30ed21a710"
+source = "git+https://github.com/Lagrange-Labs/ec-gpu?branch=feat%2Fhkzg_gpu_optim#6d214b3ba73c58c908ce4f3da60f909d2b1581bc"
 dependencies = [
  "fil-rustacuda",
  "hex",
