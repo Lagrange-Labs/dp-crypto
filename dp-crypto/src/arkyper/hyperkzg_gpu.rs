@@ -122,21 +122,17 @@ pub fn gpu_batch_commit(
     }
 
     let max_len = polys.iter().map(|p| p.len()).max().unwrap_or(0);
-    let bases_gpu = {
-        let _span =
-            tracing::debug_span!("gpu_batch_commit::convert_bases", n_bases = max_len).entered();
-        convert_bases_to_gpu(&g1_powers[..max_len])
-    };
 
     // Pass original poly slices directly — batch_commit handles zero-padding
     // internally per-poly, avoiding bulk allocation of all padded polys at once.
     let poly_slices: Vec<&[Fr]> = polys.iter().map(|p| p.evals_ref()).collect();
 
-    GPU_FUSED
-        .lock()
-        .unwrap()
-        .get_or_init()?
-        .batch_commit(&poly_slices, &bases_gpu)
+    let mut guard = GPU_FUSED.lock().unwrap();
+    guard.ensure_bases_uploaded(&g1_powers[..max_len])?;
+    let fused = guard.fused.as_ref().unwrap();
+    let bases_gpu = &guard.cached_bases_gpu.as_ref().unwrap().1;
+    fused
+        .batch_commit(&poly_slices, bases_gpu)
         .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))
 }
 
@@ -269,6 +265,11 @@ impl GpuFusedHolder {
     }
 
     pub fn get_or_init(&mut self) -> anyhow::Result<&FusedPolyCommit<Fr, GpuG1Affine>> {
+        self.ensure_init()?;
+        Ok(self.fused.as_ref().unwrap())
+    }
+
+    fn ensure_init(&mut self) -> anyhow::Result<()> {
         if self.fused.is_none() {
             let devices = Device::all();
             if devices.is_empty() {
@@ -285,8 +286,24 @@ impl GpuFusedHolder {
 
             self.fused = Some(fused);
         }
+        Ok(())
+    }
 
-        Ok(self.fused.as_ref().unwrap())
+    /// Ensure SRS bases are uploaded to GPU as a persistent buffer.
+    ///
+    /// Converts bases to GPU format (cached), then uploads to GPU memory once.
+    /// Subsequent calls with the same-sized bases are no-ops.
+    pub fn ensure_bases_uploaded(&mut self, bases: &[G1Affine]) -> anyhow::Result<()> {
+        self.ensure_init()?;
+        // Ensure CPU-side cache is populated (side effect: populates self.cached_bases_gpu)
+        let _ = self.get_or_convert_bases(bases);
+        // Upload to GPU persistent buffer using split borrows
+        let cached_bases = &self.cached_bases_gpu.as_ref().unwrap().1;
+        self.fused
+            .as_mut()
+            .unwrap()
+            .upload_bases(cached_bases)
+            .map_err(|e| anyhow::anyhow!("Failed to upload bases to GPU: {e}"))
     }
 }
 
@@ -417,21 +434,26 @@ impl HyperKZGGpu<Bn254> {
         // Keep a reference to poly evals for the callback (no clone needed)
         let poly_evals = poly.evals_ref();
 
-        // Single lock scope: get cached bases (owned copy) then run fused_open
+        // Single lock scope: ensure bases are on GPU (persistent), then run fused_open
         let result = {
             let mut guard = GPU_FUSED.lock().unwrap();
-            let bases_start = std::time::Instant::now();
-            let bases_gpu = guard.get_or_convert_bases(pk.g1_powers()).to_vec();
-            eprintln!("[open_gpu] bases .to_vec(): {:?}", bases_start.elapsed());
-            guard
-                .get_or_init()?
+            let upload_start = std::time::Instant::now();
+            guard.ensure_bases_uploaded(pk.g1_powers())?;
+            eprintln!("[open_gpu] ensure_bases_uploaded: {:?}", upload_start.elapsed());
+            // After ensure_bases_uploaded, the persistent buffer is active on the FusedPolyCommit.
+            // fused_open will use the persistent buffer and skip re-upload.
+            // The bases slice is still passed for assertion checks and fallback.
+            let fused = guard.fused.as_ref().unwrap();
+            let bases_gpu = &guard.cached_bases_gpu.as_ref().unwrap().1;
+            fused
                 .fused_open(
                     poly.evals_ref(),
                     challenges,
-                    &bases_gpu,
+                    bases_gpu,
                     pk.g1_powers(),
                     |intermediates, commitments| {
                         // === CPU work inside the GPU session ===
+                        let callback_detail_start = std::time::Instant::now();
 
                         // Build slice references to all polynomials (original + intermediates)
                         // Avoids cloning into DensePolynomial wrappers.
@@ -453,6 +475,9 @@ impl HyperKZGGpu<Bn254> {
                         let r: Fr = transcript.challenge_scalar();
                         let u = vec![r, -r, r * r];
 
+                        eprintln!("[open_gpu]   callback transcript: {:?}", callback_detail_start.elapsed());
+                        let eval_start = std::time::Instant::now();
+
                         // Evaluate f_i(u_j) on CPU using Horner's method on raw slices,
                         // parallelized with rayon for large polynomial counts.
                         let k = poly_slices.len();
@@ -468,6 +493,8 @@ impl HyperKZGGpu<Bn254> {
                                     });
                             });
                         }
+
+                        eprintln!("[open_gpu]   callback evals ({}x{}): {:?}", t, k, eval_start.elapsed());
 
                         // Transcript: append evals and get q_powers
                         let scalars: Vec<&Fr> = v.iter().flatten().collect();
@@ -487,9 +514,10 @@ impl HyperKZGGpu<Bn254> {
                 .map_err(|e| anyhow::anyhow!("GPU fused_open error: {e}"))?
         };
 
-        eprintln!("[open_gpu] TOTAL: {:?}", open_gpu_start.elapsed());
+        eprintln!("[open_gpu] fused_open returned: {:?}", open_gpu_start.elapsed());
 
         // Final transcript work (witness commitments)
+        let final_transcript_start = std::time::Instant::now();
         let w_aff: Vec<G1Affine> = result
             .witness_commitments
             .iter()
@@ -497,6 +525,8 @@ impl HyperKZGGpu<Bn254> {
             .collect();
         transcript.append_points(&w_aff);
         let _d_0: Fr = transcript.challenge_scalar();
+        eprintln!("[open_gpu] final transcript: {:?}", final_transcript_start.elapsed());
+        eprintln!("[open_gpu] TOTAL: {:?}", open_gpu_start.elapsed());
 
         Ok(HyperKZGProof {
             coms: result.intermediate_commitments_affine,
