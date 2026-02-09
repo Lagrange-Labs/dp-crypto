@@ -410,6 +410,7 @@ impl HyperKZGGpu<Bn254> {
         assert_eq!(n, 1 << ell);
 
         let _span = tracing::debug_span!("open_gpu::fused", ell, n).entered();
+        let open_gpu_start = std::time::Instant::now();
 
         let challenges = &point[..ell - 1];
 
@@ -419,7 +420,9 @@ impl HyperKZGGpu<Bn254> {
         // Single lock scope: get cached bases (owned copy) then run fused_open
         let result = {
             let mut guard = GPU_FUSED.lock().unwrap();
+            let bases_start = std::time::Instant::now();
             let bases_gpu = guard.get_or_convert_bases(pk.g1_powers()).to_vec();
+            eprintln!("[open_gpu] bases .to_vec(): {:?}", bases_start.elapsed());
             guard
                 .get_or_init()?
                 .fused_open(
@@ -483,6 +486,8 @@ impl HyperKZGGpu<Bn254> {
                 )
                 .map_err(|e| anyhow::anyhow!("GPU fused_open error: {e}"))?
         };
+
+        eprintln!("[open_gpu] TOTAL: {:?}", open_gpu_start.elapsed());
 
         // Final transcript work (witness commitments)
         let w_aff: Vec<G1Affine> = result
