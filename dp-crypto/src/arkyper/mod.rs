@@ -701,64 +701,96 @@ mod tests {
     fn test_generate_srs() {
         use std::collections::BTreeSet;
         use std::fs::File;
-        use std::io::BufReader;
+        use std::io::{BufReader, Write};
         use std::time::Instant;
+
+        macro_rules! log {
+            ($($arg:tt)*) => {{
+                println!($($arg)*);
+                std::io::stdout().flush().unwrap();
+            }};
+        }
 
         let mut rng =
             <rand_chacha::ChaCha20Rng as ark_std::rand::SeedableRng>::seed_from_u64(100);
         let mut sizes = BTreeSet::new();
 
+        log!("[generate-srs] Scanning data files for needed SRS sizes...");
+
         if let Ok(file) = File::open("/tmp/pcs_commit_polys.bin") {
+            log!("[generate-srs] Deserializing /tmp/pcs_commit_polys.bin...");
+            let t = Instant::now();
             let export: PcsCommitExport<Fr> =
                 rmp_serde::from_read(BufReader::new(file))
                     .expect("deserialize commit polys failed");
             let max_len = export.polys.iter().map(|e| e.evals.len()).max().unwrap();
             sizes.insert(max_len);
-            println!(
-                "[generate-srs] commit polys: {} polys, max_len={}",
+            log!(
+                "[generate-srs] commit polys: {} polys, max_len={} (loaded in {:.2?})",
                 export.polys.len(),
-                max_len
+                max_len,
+                t.elapsed()
             );
         } else {
-            println!("[generate-srs] No /tmp/pcs_commit_polys.bin found");
+            log!("[generate-srs] No /tmp/pcs_commit_polys.bin found");
         }
 
         if let Ok(file) = File::open("/tmp/pcs_open_poly.bin") {
+            log!("[generate-srs] Deserializing /tmp/pcs_open_poly.bin...");
+            let t = Instant::now();
             let export: PcsOpenExport<Fr> =
                 rmp_serde::from_read(BufReader::new(file))
                     .expect("deserialize open poly failed");
             let len = export.poly.evals.len();
             sizes.insert(len);
-            println!("[generate-srs] open poly: len={}", len);
+            log!(
+                "[generate-srs] open poly: len={} (loaded in {:.2?})",
+                len,
+                t.elapsed()
+            );
         } else {
-            println!("[generate-srs] No /tmp/pcs_open_poly.bin found");
+            log!("[generate-srs] No /tmp/pcs_open_poly.bin found");
         }
 
         if sizes.is_empty() {
             panic!("No data files found — cannot determine SRS sizes");
         }
 
+        log!(
+            "[generate-srs] Unique sizes to generate: {:?}",
+            sizes.iter().collect::<Vec<_>>()
+        );
+
         for size in &sizes {
-            println!("[generate-srs] Generating SRS for size={}...", size);
+            log!("[generate-srs] Generating SRS for size={} ({} points)...", size, size);
             let t_gen = Instant::now();
             let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, *size);
+            log!("[generate-srs]   SRS::setup done: {:.2?}", t_gen.elapsed());
+            let t_trim = Instant::now();
             let (cpu_pk, _vk) = srs.trim(*size);
+            log!("[generate-srs]   trim done: {:.2?}", t_trim.elapsed());
             let gen_time = t_gen.elapsed();
-            println!("[generate-srs] SRS generation: {:.2?}", gen_time);
-
-            let path = format!("/tmp/pcs_srs_{}.bin", size);
-            let t_write = Instant::now();
-            let data = rmp_serde::to_vec(&cpu_pk).expect("serialize cpu_pk failed");
-            std::fs::write(&path, &data).expect("write SRS file failed");
-            let write_time = t_write.elapsed();
-            println!(
-                "[generate-srs] Write {} bytes to {}: {:.2?}",
-                data.len(),
-                path,
-                write_time
+            log!(
+                "[generate-srs]   pk has {} g1_powers",
+                cpu_pk.g1_powers().len()
             );
 
+            let path = format!("/tmp/pcs_srs_{}.bin", size);
+            log!("[generate-srs] Serializing pk to {}...", path);
+            let t_write = Instant::now();
+            let data = rmp_serde::to_vec(&cpu_pk).expect("serialize cpu_pk failed");
+            log!(
+                "[generate-srs]   rmp_serde::to_vec: {} bytes in {:.2?}",
+                data.len(),
+                t_write.elapsed()
+            );
+            let t_disk = Instant::now();
+            std::fs::write(&path, &data).expect("write SRS file failed");
+            let write_time = t_write.elapsed();
+            log!("[generate-srs]   fs::write: {:.2?}", t_disk.elapsed());
+
             // Roundtrip verify
+            log!("[generate-srs] Roundtrip verification...");
             let t_read = Instant::now();
             let file = File::open(&path).expect("reopen SRS file failed");
             let loaded: HyperKZGProverKey<Bn254> =
@@ -770,9 +802,13 @@ mod tests {
                 cpu_pk.g1_powers().len(),
                 "roundtrip g1_powers len mismatch"
             );
-            println!("[generate-srs] Roundtrip verify: {:.2?}", read_time);
+            log!(
+                "[generate-srs]   read+deserialize: {:.2?}, {} g1_powers OK",
+                read_time,
+                loaded.g1_powers().len()
+            );
 
-            println!(
+            log!(
                 "=== SRS size={}: generate {:.2?}, write {:.2?}, roundtrip {:.2?} ===",
                 size, gen_time, write_time, read_time
             );
