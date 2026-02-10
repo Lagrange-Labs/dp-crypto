@@ -147,6 +147,28 @@ pub fn convert_bases_to_gpu(bases: &[G1Affine]) -> Vec<G1AffineM> {
     bases.par_iter().map(g1_to_gpu).collect()
 }
 
+fn montgomery_bytes_to_fq(bytes: &[u8; 32]) -> Fq {
+    let mut limbs = [0u64; 4];
+    for i in 0..4 {
+        limbs[i] = u64::from_le_bytes(bytes[i * 8..(i + 1) * 8].try_into().unwrap());
+    }
+    unsafe { std::mem::transmute::<[u64; 4], Fq>(limbs) }
+}
+
+pub fn g1affinem_to_g1affine(m: &G1AffineM) -> G1Affine {
+    if m.x == [0u8; 32] && m.y == [0u8; 32] {
+        G1Affine::identity()
+    } else {
+        let x = montgomery_bytes_to_fq(&m.x);
+        let y = montgomery_bytes_to_fq(&m.y);
+        G1Affine::new_unchecked(x, y)
+    }
+}
+
+pub fn convert_bases_from_gpu(bases: &[G1AffineM]) -> Vec<G1Affine> {
+    bases.par_iter().map(g1affinem_to_g1affine).collect()
+}
+
 pub fn convert_scalars_to_bigint(scalars: &[Fr]) -> Vec<<Fr as PrimeField>::BigInt> {
     scalars.par_iter().map(|s| s.into_bigint()).collect()
 }

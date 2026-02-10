@@ -9,7 +9,10 @@ use ark_bn254::{Bn254, Fr};
 use ark_std::rand::SeedableRng;
 use ark_std::UniformRand;
 use dp_crypto::{
-    arkyper::{transcript::blake3::Blake3Transcript, CommitmentScheme, HyperKZG, HyperKZGGpu},
+    arkyper::{
+        transcript::blake3::Blake3Transcript, CommitmentScheme, HyperKZG, HyperKZGGpu,
+        HyperKZGGpuProverKey, HyperKZGSRS,
+    },
     poly::dense::DensePolynomial,
 };
 use std::time::Instant;
@@ -37,10 +40,12 @@ fn main() -> anyhow::Result<()> {
     // Generate random evaluation point
     let point: Vec<Fr> = (0..num_vars).map(|_| Fr::rand(&mut rng)).collect();
 
-    // Setup (same for both CPU and GPU)
+    // Setup: generate SRS and derive separate CPU and GPU prover keys
     println!("Setting up SRS...");
     let start = Instant::now();
-    let (pk, vk) = HyperKZGGpu::<Bn254>::test_setup(&mut rng, num_vars);
+    let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+    let (cpu_pk, vk) = srs.trim(n);
+    let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
     println!("  Setup time: {:?}\n", start.elapsed());
 
     // =========================================================================
@@ -50,13 +55,13 @@ fn main() -> anyhow::Result<()> {
 
     // CPU commit
     let start = Instant::now();
-    let (cpu_commitment, _) = HyperKZG::<Bn254>::commit(&pk, &poly)?;
+    let (cpu_commitment, _) = HyperKZG::<Bn254>::commit(&cpu_pk, &poly)?;
     let cpu_commit_time = start.elapsed();
     println!("  CPU commit time: {:?}", cpu_commit_time);
 
     // GPU commit
     let start = Instant::now();
-    let (gpu_commitment, _) = HyperKZGGpu::<Bn254>::commit(&pk, &poly)?;
+    let (gpu_commitment, _) = HyperKZGGpu::<Bn254>::commit(&gpu_pk, &poly)?;
     let gpu_commit_time = start.elapsed();
     println!("  GPU commit time: {:?}", gpu_commit_time);
 
@@ -83,13 +88,13 @@ fn main() -> anyhow::Result<()> {
 
     // CPU batch commit
     let start = Instant::now();
-    let cpu_commitments = HyperKZG::<Bn254>::batch_commit(&pk, &polys)?;
+    let cpu_commitments = HyperKZG::<Bn254>::batch_commit(&cpu_pk, &polys)?;
     let cpu_batch_time = start.elapsed();
     println!("  CPU batch commit time: {:?}", cpu_batch_time);
 
     // GPU batch commit
     let start = Instant::now();
-    let gpu_commitments = HyperKZGGpu::<Bn254>::batch_commit(&pk, &polys)?;
+    let gpu_commitments = HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys)?;
     let gpu_batch_time = start.elapsed();
     println!("  GPU batch commit time: {:?}", gpu_batch_time);
 
@@ -111,14 +116,14 @@ fn main() -> anyhow::Result<()> {
     // CPU prove
     let mut cpu_transcript = Blake3Transcript::new(b"example");
     let start = Instant::now();
-    let cpu_proof = HyperKZG::<Bn254>::prove(&pk, &poly, &point, None, &mut cpu_transcript)?;
+    let cpu_proof = HyperKZG::<Bn254>::prove(&cpu_pk, &poly, &point, None, &mut cpu_transcript)?;
     let cpu_prove_time = start.elapsed();
     println!("  CPU prove time: {:?}", cpu_prove_time);
 
     // GPU prove
     let mut gpu_transcript = Blake3Transcript::new(b"example");
     let start = Instant::now();
-    let gpu_proof = HyperKZGGpu::<Bn254>::prove(&pk, &poly, &point, None, &mut gpu_transcript)?;
+    let gpu_proof = HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut gpu_transcript)?;
     let gpu_prove_time = start.elapsed();
     println!("  GPU prove time: {:?}", gpu_prove_time);
 

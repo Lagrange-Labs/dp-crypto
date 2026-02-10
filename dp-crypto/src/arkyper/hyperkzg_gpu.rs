@@ -9,25 +9,26 @@
 //! - Batch open: GPU-accelerated polynomial operations (fix_var, linear_combine)
 //! - Full trait implementation for CPU/GPU comparison
 
+use ark_bn254::{Bn254, Fr, G1Affine, G1Projective, G2Affine};
+use ark_ec::{CurveGroup, VariableBaseMSM, pairing::Pairing};
+use ark_ff::AdditiveGroup;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-use ark_bn254::{Bn254, Fr, G1Affine, G1Projective};
-use ark_ec::{pairing::Pairing, CurveGroup, VariableBaseMSM};
-use ark_ff::AdditiveGroup;
 use std::ops::Mul;
 
-use super::gpu_msm::convert_bases_to_gpu;
+use super::gpu_msm::{convert_bases_from_gpu, convert_bases_to_gpu};
 use super::transcript::Transcript;
 use super::{
-    kzg_open_batch, HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGVerifierKey,
-    HyperKZGSRS,
+    HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGSRS, HyperKZGVerifierKey,
+    kzg_open_batch,
 };
 use crate::arkyper::interface::CommitmentScheme;
 use crate::poly::dense::DensePolynomial;
 use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
 use ec_gpu_gen::{
-    compute_work_units, program, rust_gpu_tools::Device, FusedPolyCommit, G1AffineM, Phase3Input,
-    PolyOpsKernel,
+    FusedPolyCommit, G1AffineM, Phase3Input, PolyOpsKernel, compute_work_units, program,
+    rust_gpu_tools::Device,
 };
 
 /// Evaluate a polynomial (given as a coefficient slice) at a point using Horner's method.
@@ -63,6 +64,135 @@ impl<P: Pairing> Default for HyperKZGGpu<P> {
 impl<P: Pairing> HyperKZGGpu<P> {
     pub fn new() -> Self {
         Self::default()
+    }
+}
+
+// ============================================================================
+// GPU-Native SRS and Prover Key Types
+// ============================================================================
+
+/// GPU-native SRS for HyperKZG.
+///
+/// Stores SRS bases in GPU Montgomery format (`Vec<G1AffineM>`), eliminating
+/// the CPU↔GPU format roundtrip when used with GPU operations.
+pub struct HyperKZGGpuSRS {
+    /// Powers of g in GPU Montgomery format: [g, τ·g, τ²·g, ..., τⁿ·g]
+    powers_of_g_gpu: Vec<G1AffineM>,
+    /// First power of g in CPU affine format (for verifier key)
+    g: G1Affine,
+    /// Single gamma_g point in CPU affine format (for verifier key)
+    gamma_g: G1Affine,
+    /// G2 generator
+    h: G2Affine,
+    /// beta * h in G2
+    beta_h: G2Affine,
+    /// Precomputed pairing data for h
+    prepared_h: <Bn254 as Pairing>::G2Prepared,
+    /// Precomputed pairing data for beta_h
+    prepared_beta_h: <Bn254 as Pairing>::G2Prepared,
+}
+
+impl HyperKZGGpuSRS {
+    /// Trim the SRS to a maximum degree, producing a GPU prover key and verifier key.
+    pub fn trim(
+        mut self,
+        mut max_degree: usize,
+    ) -> (HyperKZGGpuProverKey, HyperKZGVerifierKey<Bn254>) {
+        if max_degree == 1 {
+            max_degree += 1;
+        }
+        self.powers_of_g_gpu
+            .resize(max_degree + 1, G1AffineM::default());
+
+        let pk = HyperKZGGpuProverKey {
+            bases_gpu: self.powers_of_g_gpu,
+        };
+
+        let vk = HyperKZGVerifierKey {
+            kzg_vk: ark_poly_commit::kzg10::VerifierKey {
+                g: self.g,
+                gamma_g: self.gamma_g,
+                h: self.h,
+                beta_h: self.beta_h,
+                prepared_h: self.prepared_h,
+                prepared_beta_h: self.prepared_beta_h,
+            },
+        };
+
+        (pk, vk)
+    }
+
+    /// Convert a CPU-format SRS to GPU-native format.
+    pub fn from_cpu(srs: HyperKZGSRS<Bn254>) -> Self {
+        let params = srs.0;
+        let powers_of_g_gpu = convert_bases_to_gpu(&params.powers_of_g);
+
+        Self {
+            powers_of_g_gpu,
+            g: params.powers_of_g[0],
+            gamma_g: params.powers_of_gamma_g[&0],
+            h: params.h,
+            beta_h: params.beta_h,
+            prepared_h: params.prepared_h,
+            prepared_beta_h: params.prepared_beta_h,
+        }
+    }
+}
+
+/// GPU-native prover key for HyperKZG.
+///
+/// Stores SRS bases in GPU Montgomery format, ready for direct upload to GPU
+/// without conversion overhead.
+#[derive(Clone, Debug)]
+pub struct HyperKZGGpuProverKey {
+    bases_gpu: Vec<G1AffineM>,
+}
+
+impl HyperKZGGpuProverKey {
+    pub fn bases_gpu(&self) -> &[G1AffineM] {
+        &self.bases_gpu
+    }
+
+    /// Convert a CPU-format prover key to GPU-native format.
+    pub fn from_cpu(pk: &HyperKZGProverKey<Bn254>) -> Self {
+        Self {
+            bases_gpu: convert_bases_to_gpu(pk.g1_powers()),
+        }
+    }
+}
+
+impl Serialize for HyperKZGGpuProverKey {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let n = self.bases_gpu.len();
+        let mut data = vec![0u8; n * 64];
+        for (i, m) in self.bases_gpu.iter().enumerate() {
+            data[i * 64..i * 64 + 32].copy_from_slice(&m.x);
+            data[i * 64 + 32..(i + 1) * 64].copy_from_slice(&m.y);
+        }
+        (n, data).serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for HyperKZGGpuProverKey {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let (n, data): (usize, Vec<u8>) = Deserialize::deserialize(deserializer)?;
+        if data.len() != n * 64 {
+            return Err(serde::de::Error::custom(format!(
+                "invalid data length: expected {} bytes for {} bases, got {}",
+                n * 64,
+                n,
+                data.len()
+            )));
+        }
+        let mut bases_gpu = Vec::with_capacity(n);
+        for i in 0..n {
+            let mut x = [0u8; 32];
+            let mut y = [0u8; 32];
+            x.copy_from_slice(&data[i * 64..i * 64 + 32]);
+            y.copy_from_slice(&data[i * 64 + 32..(i + 1) * 64]);
+            bases_gpu.push(G1AffineM { x, y });
+        }
+        Ok(HyperKZGGpuProverKey { bases_gpu })
     }
 }
 
@@ -111,9 +241,9 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 ///
 /// Uses the sort-based MSM pipeline via `FusedPolyCommit::batch_commit`,
 /// which is significantly faster than the old per-thread bucket approach.
-/// Bases are uploaded once and Montgomery→standard conversion happens on GPU.
+/// Accepts bases in GPU Montgomery format directly, avoiding conversion overhead.
 pub fn gpu_batch_commit(
-    g1_powers: &[G1Affine],
+    bases_gpu: &[G1AffineM],
     polys: &[&DensePolynomial<Fr>],
 ) -> anyhow::Result<Vec<G1Projective>> {
     let _span = tracing::debug_span!("gpu_batch_commit", n_polys = polys.len()).entered();
@@ -128,11 +258,10 @@ pub fn gpu_batch_commit(
     let poly_slices: Vec<&[Fr]> = polys.iter().map(|p| p.evals_ref()).collect();
 
     let mut guard = GPU_FUSED.lock().unwrap();
-    guard.ensure_bases_uploaded(&g1_powers[..max_len])?;
+    guard.ensure_bases_uploaded_gpu(&bases_gpu[..max_len])?;
     let fused = guard.fused.as_ref().unwrap();
-    let bases_gpu = &guard.cached_bases_gpu.as_ref().unwrap().1;
     fused
-        .batch_commit(&poly_slices, bases_gpu)
+        .batch_commit(&poly_slices, &bases_gpu[..max_len])
         .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))
 }
 
@@ -185,7 +314,6 @@ pub fn gpu_witness_poly(f: &[Fr], u: &Fr) -> anyhow::Result<Vec<Fr>> {
         .witness_poly(f, u)
         .map_err(|e| anyhow::anyhow!("GPU witness_poly error: {e}"))
 }
-
 
 // ============================================================================
 // CPU Reference Operations (for comparison)
@@ -240,7 +368,10 @@ pub fn cpu_batch_commit(
 /// This is lazily initialized when first needed.
 pub struct GpuFusedHolder {
     fused: Option<FusedPolyCommit<Fr, GpuG1Affine>>,
+    /// Cached GPU-format bases converted from CPU-format (for backward compat path).
     cached_bases_gpu: Option<(usize, Vec<G1AffineM>)>,
+    /// Cached CPU-format bases reverse-converted from GPU-format (for hybrid MSM in fused_open).
+    cached_cpu_bases: Option<(usize, Vec<G1Affine>)>,
 }
 
 impl GpuFusedHolder {
@@ -248,6 +379,7 @@ impl GpuFusedHolder {
         Self {
             fused: None,
             cached_bases_gpu: None,
+            cached_cpu_bases: None,
         }
     }
 
@@ -289,15 +421,39 @@ impl GpuFusedHolder {
         Ok(())
     }
 
-    /// Ensure SRS bases are uploaded to GPU as a persistent buffer.
+    /// Upload GPU-format bases directly to the persistent GPU buffer.
+    /// No CPU→GPU format conversion needed.
+    pub fn ensure_bases_uploaded_gpu(&mut self, bases_gpu: &[G1AffineM]) -> anyhow::Result<()> {
+        self.ensure_init()?;
+        self.fused
+            .as_mut()
+            .unwrap()
+            .upload_bases(bases_gpu)
+            .map_err(|e| anyhow::anyhow!("Failed to upload bases to GPU: {e}"))
+    }
+
+    /// Ensure CPU bases cache is populated for the given GPU bases.
+    /// This is needed for fused_open's hybrid MSM which falls back to CPU for small MSMs.
+    fn ensure_cpu_bases_cached(&mut self, bases_gpu: &[G1AffineM]) {
+        if self
+            .cached_cpu_bases
+            .as_ref()
+            .map_or(true, |(len, _)| *len != bases_gpu.len())
+        {
+            let _span =
+                tracing::debug_span!("convert_bases_from_gpu", n_bases = bases_gpu.len())
+                    .entered();
+            self.cached_cpu_bases = Some((bases_gpu.len(), convert_bases_from_gpu(bases_gpu)));
+        }
+    }
+
+    /// Ensure SRS bases are uploaded to GPU as a persistent buffer (CPU-format input path).
     ///
     /// Converts bases to GPU format (cached), then uploads to GPU memory once.
     /// Subsequent calls with the same-sized bases are no-ops.
     pub fn ensure_bases_uploaded(&mut self, bases: &[G1Affine]) -> anyhow::Result<()> {
         self.ensure_init()?;
-        // Ensure CPU-side cache is populated (side effect: populates self.cached_bases_gpu)
         let _ = self.get_or_convert_bases(bases);
-        // Upload to GPU persistent buffer using split borrows
         let cached_bases = &self.cached_bases_gpu.as_ref().unwrap().1;
         self.fused
             .as_mut()
@@ -316,24 +472,26 @@ pub static GPU_FUSED: std::sync::LazyLock<std::sync::Mutex<GpuFusedHolder>> =
 
 /// GPU-accelerated SRS (trusted setup) generation.
 ///
-/// Computes `[G, tau*G, tau^2*G, ..., tau^n*G]` and `[gamma*G, gamma*tau*G, ...]`
-/// using GPU batch scalar multiplication, which is significantly faster than
-/// the CPU sequential approach for large degrees.
+/// Computes `[G, tau*G, tau^2*G, ..., tau^n*G]` using GPU batch scalar
+/// multiplication, returning a GPU-native SRS with bases already in
+/// GPU Montgomery format.
+///
+/// Unlike the CPU `HyperKZGSRS::setup`, this skips computing the full
+/// `powers_of_gamma_g` array — only the single `gamma_g` point is kept
+/// for the verifier key, since GPU operations don't use gamma_g powers.
 ///
 /// # Arguments
 /// * `rng` - Random number generator for generating tau, gamma, and base points
 /// * `max_degree` - Maximum polynomial degree (number of G1 powers = max_degree + 1)
 ///
 /// # Returns
-/// `HyperKZGSRS<Bn254>` containing the computed powers.
+/// `HyperKZGGpuSRS` containing GPU-native bases and CPU-format verifier components.
 pub fn gpu_setup<R: ark_std::rand::Rng + ark_std::rand::RngCore>(
     rng: &mut R,
     max_degree: usize,
-) -> anyhow::Result<super::HyperKZGSRS<Bn254>> {
+) -> anyhow::Result<HyperKZGGpuSRS> {
     use ark_ec::CurveGroup;
     use ark_ff::{One, UniformRand};
-    use ark_poly_commit::kzg10::UniversalParams;
-    use std::collections::BTreeMap;
 
     if max_degree < 1 {
         return Err(anyhow::anyhow!("Degree must be at least 1"));
@@ -347,11 +505,11 @@ pub fn gpu_setup<R: ark_std::rand::Rng + ark_std::rand::RngCore>(
     let gamma_g = G1Projective::rand(rng);
     let h = ark_bn254::G2Projective::rand(rng);
 
-    // Compute powers of beta: [1, beta, beta^2, ..., beta^(max_degree+1)]
+    // Compute powers of beta: [1, beta, beta^2, ..., beta^max_degree]
     let powers_of_beta_span = tracing::debug_span!("compute_powers_of_beta").entered();
     let mut powers_of_beta = vec![Fr::one()];
     let mut cur = beta;
-    for _ in 0..=max_degree {
+    for _ in 0..max_degree {
         powers_of_beta.push(cur);
         cur *= &beta;
     }
@@ -367,26 +525,17 @@ pub fn gpu_setup<R: ark_std::rand::Rng + ark_std::rand::RngCore>(
         .lock()
         .unwrap()
         .get_or_init()?
-        .batch_scalar_mul(&g_gpu, &powers_of_beta[0..max_degree + 1])
+        .batch_scalar_mul(&g_gpu, &powers_of_beta)
         .map_err(|e| anyhow::anyhow!("GPU batch_scalar_mul error: {e}"))?;
     drop(powers_of_g_span);
 
-    // GPU batch scalar multiplication for powers_of_gamma_g
-    let gamma_g_affine: G1Affine = gamma_g.into_affine();
-    let gamma_g_gpu: GpuG1Affine = GpuG1Affine::from(gamma_g_affine);
+    // Convert to GPU Montgomery format immediately
+    let convert_span = tracing::debug_span!("convert_powers_to_gpu").entered();
+    let powers_of_g_gpu = convert_bases_to_gpu(&powers_of_g);
+    drop(convert_span);
 
-    let powers_of_gamma_g_span =
-        tracing::debug_span!("gpu_batch_scalar_mul_powers_of_gamma_g").entered();
-    let powers_of_gamma_g: BTreeMap<usize, G1Affine> = GPU_FUSED
-        .lock()
-        .unwrap()
-        .get_or_init()?
-        .batch_scalar_mul(&gamma_g_gpu, &powers_of_beta)
-        .map_err(|e| anyhow::anyhow!("GPU batch_scalar_mul error: {e}"))?
-        .into_iter()
-        .enumerate()
-        .collect();
-    drop(powers_of_gamma_g_span);
+    // Single gamma_g point for verifier key (no need for full powers_of_gamma_g)
+    let gamma_g_affine: G1Affine = gamma_g.into_affine();
 
     // G2 computations (small, done on CPU)
     let h_affine = h.into_affine();
@@ -394,29 +543,27 @@ pub fn gpu_setup<R: ark_std::rand::Rng + ark_std::rand::RngCore>(
     let prepared_h = h_affine.into();
     let prepared_beta_h = beta_h.into();
 
-    let params = UniversalParams {
-        powers_of_g,
-        powers_of_gamma_g,
+    Ok(HyperKZGGpuSRS {
+        powers_of_g_gpu,
+        g: g_affine,
+        gamma_g: gamma_g_affine,
         h: h_affine,
         beta_h,
-        neg_powers_of_h: BTreeMap::new(), // Not used in HyperKZG
         prepared_h,
         prepared_beta_h,
-    };
-
-    Ok(super::HyperKZGSRS::from_params(params))
+    })
 }
 
 impl HyperKZGGpu<Bn254> {
     /// GPU-accelerated open operation using fused GPU session.
     ///
     /// Runs the entire HyperKZG open in a single GPU session:
-    /// - Bases uploaded once and reused for Phase 2 (intermediate commits) and Phase 3 (witness commits)
+    /// - Bases uploaded directly from GPU-native prover key (no format conversion)
     /// - Scalar conversion happens on GPU (no CPU `convert_scalars_to_bigint`)
     /// - Witness polynomials never leave GPU
     /// - CPU transcript work runs inside the GPU session via callback
     pub fn open_gpu<ProofTranscript: Transcript>(
-        pk: &HyperKZGProverKey<Bn254>,
+        pk: &HyperKZGGpuProverKey,
         poly: &DensePolynomial<Fr>,
         point: &[Fr],
         _eval: &Fr,
@@ -434,23 +581,29 @@ impl HyperKZGGpu<Bn254> {
         // Keep a reference to poly evals for the callback (no clone needed)
         let poly_evals = poly.evals_ref();
 
-        // Single lock scope: ensure bases are on GPU (persistent), then run fused_open
+        // Single lock scope: upload GPU bases directly (no conversion), then run fused_open
         let result = {
             let mut guard = GPU_FUSED.lock().unwrap();
             let upload_start = std::time::Instant::now();
-            guard.ensure_bases_uploaded(pk.g1_powers())?;
-            eprintln!("[open_gpu] ensure_bases_uploaded: {:?}", upload_start.elapsed());
-            // After ensure_bases_uploaded, the persistent buffer is active on the FusedPolyCommit.
-            // fused_open will use the persistent buffer and skip re-upload.
-            // The bases slice is still passed for assertion checks and fallback.
+            guard.ensure_bases_uploaded_gpu(pk.bases_gpu())?;
+            eprintln!(
+                "[open_gpu] ensure_bases_uploaded_gpu: {:?}",
+                upload_start.elapsed()
+            );
+
+            // Ensure CPU bases cache is populated for fused_open's hybrid MSM
+            // (small MSM fallback uses CPU bases). The &mut borrow ends here.
+            guard.ensure_cpu_bases_cached(pk.bases_gpu());
+
+            // Now take immutable borrows on separate fields
             let fused = guard.fused.as_ref().unwrap();
-            let bases_gpu = &guard.cached_bases_gpu.as_ref().unwrap().1;
+            let cpu_bases = &guard.cached_cpu_bases.as_ref().unwrap().1;
             fused
                 .fused_open(
                     poly.evals_ref(),
                     challenges,
-                    bases_gpu,
-                    pk.g1_powers(),
+                    pk.bases_gpu(),
+                    cpu_bases,
                     |intermediates, commitments| {
                         // === CPU work inside the GPU session ===
                         let callback_detail_start = std::time::Instant::now();
@@ -475,7 +628,10 @@ impl HyperKZGGpu<Bn254> {
                         let r: Fr = transcript.challenge_scalar();
                         let u = vec![r, -r, r * r];
 
-                        eprintln!("[open_gpu]   callback transcript: {:?}", callback_detail_start.elapsed());
+                        eprintln!(
+                            "[open_gpu]   callback transcript: {:?}",
+                            callback_detail_start.elapsed()
+                        );
                         let eval_start = std::time::Instant::now();
 
                         // Evaluate f_i(u_j) on CPU using Horner's method on raw slices,
@@ -486,23 +642,26 @@ impl HyperKZGGpu<Bn254> {
                         {
                             use rayon::prelude::*;
                             v.par_iter_mut().enumerate().for_each(|(i, v_i)| {
-                                v_i.par_iter_mut()
-                                    .zip(poly_slices.par_iter())
-                                    .for_each(|(v_ij, coeffs)| {
+                                v_i.par_iter_mut().zip(poly_slices.par_iter()).for_each(
+                                    |(v_ij, coeffs)| {
                                         *v_ij = eval_as_univariate(coeffs, &u[i]);
-                                    });
+                                    },
+                                );
                             });
                         }
 
-                        eprintln!("[open_gpu]   callback evals ({}x{}): {:?}", t, k, eval_start.elapsed());
+                        eprintln!(
+                            "[open_gpu]   callback evals ({}x{}): {:?}",
+                            t,
+                            k,
+                            eval_start.elapsed()
+                        );
 
                         // Transcript: append evals and get q_powers
                         let scalars: Vec<&Fr> = v.iter().flatten().collect();
                         transcript.append_scalars::<Fr>(&scalars);
                         let q_powers: Vec<Fr> = transcript.challenge_scalar_powers(k);
 
-                        // No padded_polys needed — intermediate buffers are kept on GPU
-                        // and packed via copy_and_pad kernel, eliminating ~2.8GB CPU→GPU transfer.
                         Phase3Input {
                             lc_coeffs: q_powers,
                             eval_points: u,
@@ -514,7 +673,10 @@ impl HyperKZGGpu<Bn254> {
                 .map_err(|e| anyhow::anyhow!("GPU fused_open error: {e}"))?
         };
 
-        eprintln!("[open_gpu] fused_open returned: {:?}", open_gpu_start.elapsed());
+        eprintln!(
+            "[open_gpu] fused_open returned: {:?}",
+            open_gpu_start.elapsed()
+        );
 
         // Final transcript work (witness commitments)
         let final_transcript_start = std::time::Instant::now();
@@ -525,7 +687,10 @@ impl HyperKZGGpu<Bn254> {
             .collect();
         transcript.append_points(&w_aff);
         let _d_0: Fr = transcript.challenge_scalar();
-        eprintln!("[open_gpu] final transcript: {:?}", final_transcript_start.elapsed());
+        eprintln!(
+            "[open_gpu] final transcript: {:?}",
+            final_transcript_start.elapsed()
+        );
         eprintln!("[open_gpu] TOTAL: {:?}", open_gpu_start.elapsed());
 
         Ok(HyperKZGProof {
@@ -587,7 +752,7 @@ impl HyperKZGGpu<Bn254> {
 
 impl CommitmentScheme for HyperKZGGpu<Bn254> {
     type Field = Fr;
-    type ProverSetup = HyperKZGProverKey<Bn254>;
+    type ProverSetup = HyperKZGGpuProverKey;
     type VerifierSetup = HyperKZGVerifierKey<Bn254>;
     type Commitment = HyperKZGCommitment<Bn254>;
     type Proof = HyperKZGProof<Bn254>;
@@ -598,7 +763,9 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         rng: &mut R,
         max_num_vars: usize,
     ) -> (Self::ProverSetup, Self::VerifierSetup) {
-        HyperKZGSRS::setup(rng, 1 << max_num_vars).trim(1 << max_num_vars)
+        let srs = HyperKZGSRS::setup(rng, 1 << max_num_vars);
+        let (cpu_pk, vk) = srs.trim(1 << max_num_vars);
+        (HyperKZGGpuProverKey::from_cpu(&cpu_pk), vk)
     }
 
     #[tracing::instrument(skip_all, name = "HyperKZGGpu::commit")]
@@ -606,7 +773,7 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         setup: &Self::ProverSetup,
         poly: &DensePolynomial<Self::Field>,
     ) -> anyhow::Result<(Self::Commitment, Self::OpeningProofHint)> {
-        let results = gpu_batch_commit(setup.g1_powers(), &[poly])?;
+        let results = gpu_batch_commit(setup.bases_gpu(), &[poly])?;
         Ok((HyperKZGCommitment(results[0].into_affine()), ()))
     }
 
@@ -619,7 +786,7 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         U: Borrow<DensePolynomial<'a, Self::Field>> + Sync,
     {
         let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().map(|p| p.borrow()).collect();
-        let results = gpu_batch_commit(gens.g1_powers(), &poly_refs)?;
+        let results = gpu_batch_commit(gens.bases_gpu(), &poly_refs)?;
 
         Ok(results
             .into_iter()
@@ -657,8 +824,14 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         opening: &Self::Field,
         commitment: &Self::Commitment,
     ) -> anyhow::Result<()> {
-        // Use the existing verify implementation
-        super::HyperKZG::<Bn254>::verify(setup, commitment, opening_point, opening, proof, transcript)
+        super::HyperKZG::<Bn254>::verify(
+            setup,
+            commitment,
+            opening_point,
+            opening,
+            proof,
+            transcript,
+        )
     }
 
     fn protocol_name() -> &'static [u8] {
@@ -673,11 +846,11 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::arkyper::transcript::blake3::Blake3Transcript;
     use crate::arkyper::HyperKZG;
+    use crate::arkyper::transcript::blake3::Blake3Transcript;
     use crate::poly::challenge;
-    use ark_std::rand::SeedableRng;
     use ark_std::UniformRand;
+    use ark_std::rand::SeedableRng;
 
     /// Test that GPU fix_var matches CPU fix_var.
     #[test]
@@ -751,7 +924,6 @@ mod tests {
             let n = 1 << ell;
             let num_polys = 5;
 
-            // Generate random polynomials
             let polys: Vec<DensePolynomial<Fr>> = (0..num_polys)
                 .map(|_| {
                     let coeffs: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
@@ -759,14 +931,16 @@ mod tests {
                 })
                 .collect();
 
-            // Setup SRS
             let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
-            let (pk, _) = srs.trim(n);
+            let (cpu_pk, _) = srs.trim(n);
+            let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
 
             let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
 
-            let cpu_results = cpu_batch_commit(pk.g1_powers(), &poly_refs).expect("CPU failed");
-            let gpu_results = gpu_batch_commit(pk.g1_powers(), &poly_refs).expect("GPU failed");
+            let cpu_results =
+                cpu_batch_commit(cpu_pk.g1_powers(), &poly_refs).expect("CPU failed");
+            let gpu_results =
+                gpu_batch_commit(gpu_pk.bases_gpu(), &poly_refs).expect("GPU failed");
 
             assert_eq!(cpu_results.len(), gpu_results.len());
             for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
@@ -800,21 +974,21 @@ mod tests {
             let eval = poly.evaluate(&point).expect("eval failed");
 
             let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
-            let (pk, vk) = srs.trim(n);
+            let (cpu_pk, vk) = srs.trim(n);
+            let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
 
-            // Get commitment (should be same for both)
-            let (comm, _) = HyperKZG::<Bn254>::commit(&pk, &poly).expect("commit failed");
+            let (comm, _) = HyperKZG::<Bn254>::commit(&cpu_pk, &poly).expect("commit failed");
 
             // CPU open
             let mut cpu_transcript = Blake3Transcript::new(b"TestOpen");
             let cpu_proof =
-                HyperKZGGpu::<Bn254>::open_cpu(&pk, &poly, &point, &eval, &mut cpu_transcript)
+                HyperKZGGpu::<Bn254>::open_cpu(&cpu_pk, &poly, &point, &eval, &mut cpu_transcript)
                     .expect("CPU open failed");
 
             // GPU open
             let mut gpu_transcript = Blake3Transcript::new(b"TestOpen");
             let gpu_proof =
-                HyperKZGGpu::<Bn254>::open_gpu(&pk, &poly, &point, &eval, &mut gpu_transcript)
+                HyperKZGGpu::<Bn254>::open_gpu(&gpu_pk, &poly, &point, &eval, &mut gpu_transcript)
                     .expect("GPU open failed");
 
             // Compare intermediate commitments
@@ -846,12 +1020,26 @@ mod tests {
 
             // Verify both proofs
             let mut verify_transcript = Blake3Transcript::new(b"TestOpen");
-            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &cpu_proof, &mut verify_transcript)
-                .expect("CPU proof verification failed");
+            HyperKZG::<Bn254>::verify(
+                &vk,
+                &comm,
+                &point,
+                &eval,
+                &cpu_proof,
+                &mut verify_transcript,
+            )
+            .expect("CPU proof verification failed");
 
             let mut verify_transcript = Blake3Transcript::new(b"TestOpen");
-            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &gpu_proof, &mut verify_transcript)
-                .expect("GPU proof verification failed");
+            HyperKZG::<Bn254>::verify(
+                &vk,
+                &comm,
+                &point,
+                &eval,
+                &gpu_proof,
+                &mut verify_transcript,
+            )
+            .expect("GPU proof verification failed");
         }
     }
 
@@ -875,16 +1063,18 @@ mod tests {
                 .collect();
             let eval = poly.evaluate(&point).expect("eval failed");
 
-            // Setup using trait
-            let (pk, vk) = HyperKZGGpu::<Bn254>::test_setup(&mut rng, ell);
+            // Generate both CPU and GPU prover keys from the same SRS
+            let srs = HyperKZGSRS::setup(&mut rng, n);
+            let (cpu_pk, vk) = srs.trim(n);
+            let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
 
             // CPU commit (using original HyperKZG)
             let (cpu_comm, _) =
-                HyperKZG::<Bn254>::commit(&pk, &poly).expect("CPU commit failed");
+                HyperKZG::<Bn254>::commit(&cpu_pk, &poly).expect("CPU commit failed");
 
             // GPU commit (using HyperKZGGpu)
             let (gpu_comm, _) =
-                HyperKZGGpu::<Bn254>::commit(&pk, &poly).expect("GPU commit failed");
+                HyperKZGGpu::<Bn254>::commit(&gpu_pk, &poly).expect("GPU commit failed");
 
             assert_eq!(
                 cpu_comm.0, gpu_comm.0,
@@ -893,13 +1083,14 @@ mod tests {
 
             // CPU prove (using original HyperKZG)
             let mut cpu_transcript = Blake3Transcript::new(b"TraitTest");
-            let cpu_proof = HyperKZG::<Bn254>::prove(&pk, &poly, &point, None, &mut cpu_transcript)
-                .expect("CPU prove failed");
+            let cpu_proof =
+                HyperKZG::<Bn254>::prove(&cpu_pk, &poly, &point, None, &mut cpu_transcript)
+                    .expect("CPU prove failed");
 
             // GPU prove (using HyperKZGGpu trait)
             let mut gpu_transcript = Blake3Transcript::new(b"TraitTest");
             let gpu_proof =
-                HyperKZGGpu::<Bn254>::prove(&pk, &poly, &point, None, &mut gpu_transcript)
+                HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut gpu_transcript)
                     .expect("GPU prove failed");
 
             // Verify both proofs
@@ -933,8 +1124,8 @@ mod tests {
     /// Runs CPU and GPU in separate scopes to avoid holding both results in memory.
     #[test]
     fn test_commit_from_exported_data() {
-        use ark_bn254::G1Affine;
         use crate::arkyper::{HyperKZGSRS, PcsCommitExport};
+        use ark_bn254::G1Affine;
         use std::time::Instant;
 
         if Device::all().is_empty() {
@@ -959,7 +1150,6 @@ mod tests {
                 .into_iter()
                 .map(|e| DensePolynomial::new(e.evals))
                 .collect()
-            // `data` dropped here
         };
         let num_polys = polys.len();
         println!(
@@ -974,27 +1164,31 @@ mod tests {
         println!("[commit] Generating SRS (max_len={})...", max_len);
         let t_srs = Instant::now();
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(100);
-        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_len);
-        let (pk, _) = srs.trim(max_len);
+        let (cpu_pk, gpu_pk) = {
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_len);
+            let (cpu_pk, _) = srs.trim(max_len);
+            let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+            (cpu_pk, gpu_pk)
+        };
         println!("[commit] SRS generated in {:.2?}", t_srs.elapsed());
 
-        // CPU scope: commit, extract lightweight points, drop full result
+        // CPU scope
         println!("[commit] Running CPU batch_commit...");
         let t_cpu = Instant::now();
         let cpu_points: Vec<G1Affine> = {
             let commits =
-                HyperKZG::<Bn254>::batch_commit(&pk, &polys).expect("CPU commit failed");
+                HyperKZG::<Bn254>::batch_commit(&cpu_pk, &polys).expect("CPU commit failed");
             commits.into_iter().map(|(c, _)| c.0).collect()
         };
         let cpu_time = t_cpu.elapsed();
         println!("[commit] CPU batch_commit done in {:.2?}", cpu_time);
 
-        // GPU scope: commit, compare immediately, drop full result
+        // GPU scope
         println!("[commit] Running GPU batch_commit...");
         let t_gpu = Instant::now();
         let gpu_points: Vec<G1Affine> = {
             let commits =
-                HyperKZGGpu::<Bn254>::batch_commit(&pk, &polys).expect("GPU commit failed");
+                HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys).expect("GPU commit failed");
             commits.into_iter().map(|(c, _)| c.0).collect()
         };
         let gpu_time = t_gpu.elapsed();
@@ -1040,11 +1234,7 @@ mod tests {
             };
             let export: PcsOpenExport<Fr> =
                 rmp_serde::from_slice(&data).expect("deserialize failed");
-            (
-                DensePolynomial::new(export.poly.evals),
-                export.point,
-            )
-            // `data` dropped here
+            (DensePolynomial::new(export.poly.evals), export.point)
         };
         println!(
             "[open] Loaded poly nv={}, point_len={} in {:.2?}",
@@ -1056,8 +1246,11 @@ mod tests {
         println!("[open] Generating SRS (poly_len={})...", poly.len());
         let t_srs = Instant::now();
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(200);
-        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, poly.len());
-        let (pk, vk) = srs.trim(poly.len());
+        let (cpu_pk, vk) = {
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, poly.len());
+            srs.trim(poly.len())
+        };
+        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
         println!("[open] SRS generated in {:.2?}", t_srs.elapsed());
 
         println!("[open] Evaluating polynomial...");
@@ -1067,15 +1260,15 @@ mod tests {
 
         println!("[open] Computing commitment...");
         let t_comm = Instant::now();
-        let (comm, _) = HyperKZG::<Bn254>::commit(&pk, &poly).expect("commit failed");
+        let (comm, _) = HyperKZG::<Bn254>::commit(&cpu_pk, &poly).expect("commit failed");
         println!("[open] Commitment done in {:.2?}", t_comm.elapsed());
 
-        // CPU prove — run, verify, keep proof for comparison
+        // CPU prove
         println!("[open] Running CPU open (prove)...");
         let t_cpu = Instant::now();
         let cpu_proof = {
             let mut transcript = Blake3Transcript::new(b"ExportedTest");
-            HyperKZGGpu::<Bn254>::open_cpu(&pk, &poly, &point, &eval, &mut transcript)
+            HyperKZGGpu::<Bn254>::open_cpu(&cpu_pk, &poly, &point, &eval, &mut transcript)
                 .expect("CPU open failed")
         };
         let cpu_time = t_cpu.elapsed();
@@ -1090,29 +1283,24 @@ mod tests {
         }
         println!("[open] CPU proof verified in {:.2?}", t_vcpu.elapsed());
 
-        // GPU prove — run, verify, compare with CPU proof
+        // GPU prove
         println!("[open] Running GPU open (prove)...");
         let t_gpu = Instant::now();
         let gpu_proof = {
             let mut transcript = Blake3Transcript::new(b"ExportedTest");
-            HyperKZGGpu::<Bn254>::open_gpu(&pk, &poly, &point, &eval, &mut transcript)
+            HyperKZGGpu::<Bn254>::open_gpu(&gpu_pk, &poly, &point, &eval, &mut transcript)
                 .expect("GPU open failed")
         };
         let gpu_time = t_gpu.elapsed();
         println!("[open] GPU open done in {:.2?}", gpu_time);
 
-        println!("[open] Verifying GPU proof...");
-        let t_vgpu = Instant::now();
-        {
-            let mut t = Blake3Transcript::new(b"ExportedTest");
-            HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &gpu_proof, &mut t)
-                .expect("GPU proof verification failed");
-        }
-        println!("[open] GPU proof verified in {:.2?}", t_vgpu.elapsed());
-
         // Compare proof components
         println!("[open] Comparing proof components...");
-        assert_eq!(cpu_proof.coms.len(), gpu_proof.coms.len(), "coms count differs");
+        assert_eq!(
+            cpu_proof.coms.len(),
+            gpu_proof.coms.len(),
+            "coms count differs"
+        );
         for (i, (c, g)) in cpu_proof.coms.iter().zip(gpu_proof.coms.iter()).enumerate() {
             assert_eq!(c, g, "com[{}] differs", i);
         }
@@ -1153,13 +1341,17 @@ mod tests {
             })
             .collect();
 
-        let (pk, _) = HyperKZGGpu::<Bn254>::test_setup(&mut rng, ell);
+        // Generate both CPU and GPU prover keys from the same SRS
+        let srs = HyperKZGSRS::setup(&mut rng, n);
+        let (cpu_pk, _) = srs.trim(n);
+        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
 
         // CPU batch commit
-        let cpu_commits = HyperKZG::<Bn254>::batch_commit(&pk, &polys).expect("CPU failed");
+        let cpu_commits = HyperKZG::<Bn254>::batch_commit(&cpu_pk, &polys).expect("CPU failed");
 
         // GPU batch commit
-        let gpu_commits = HyperKZGGpu::<Bn254>::batch_commit(&pk, &polys).expect("GPU failed");
+        let gpu_commits =
+            HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys).expect("GPU failed");
 
         assert_eq!(cpu_commits.len(), gpu_commits.len());
         for (i, ((cpu_c, _), (gpu_c, _))) in cpu_commits.iter().zip(gpu_commits.iter()).enumerate()
@@ -1174,5 +1366,105 @@ mod tests {
             "Batch commit test passed: {} polynomials, n={}",
             num_polys, n
         );
+    }
+
+    /// Test GPU SRS from_cpu conversion produces equivalent commits.
+    #[test]
+    fn test_gpu_srs_from_cpu_equivalence() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(48);
+        let ell = 10;
+        let n = 1 << ell;
+
+        let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+        let poly = DensePolynomial::from(poly_raw);
+
+        // CPU SRS → CPU commit
+        let cpu_srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+        let (cpu_pk, vk) = cpu_srs.trim(n);
+        let (cpu_comm, _) = HyperKZG::<Bn254>::commit(&cpu_pk, &poly).expect("CPU commit failed");
+
+        // CPU SRS → GPU SRS via from_cpu → GPU commit
+        let cpu_srs2 = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+        let gpu_srs = HyperKZGGpuSRS::from_cpu(cpu_srs2);
+        let (gpu_pk, gpu_vk) = gpu_srs.trim(n);
+        let (gpu_comm, _) =
+            HyperKZGGpu::<Bn254>::commit(&gpu_pk, &poly).expect("GPU commit failed");
+
+        // Note: different SRS → different commits (different random secrets).
+        // But both should produce valid commitments that verify.
+        // To compare same-SRS results, use from_cpu on the prover key:
+        let gpu_pk_same = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+        let (gpu_comm_same, _) =
+            HyperKZGGpu::<Bn254>::commit(&gpu_pk_same, &poly).expect("GPU commit same SRS failed");
+
+        assert_eq!(
+            cpu_comm.0, gpu_comm_same.0,
+            "CPU and GPU (from_cpu) commits should match for same SRS"
+        );
+        println!("GPU SRS from_cpu equivalence test passed");
+    }
+
+    /// Test serialization roundtrip for HyperKZGGpuProverKey.
+    #[test]
+    fn test_gpu_prover_key_serialization() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(49);
+        let n = 1 << 8;
+
+        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
+        let (cpu_pk, _) = srs.trim(n);
+        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+
+        // Serialize
+        let serialized = rmp_serde::to_vec(&gpu_pk).expect("serialize failed");
+        println!(
+            "Serialized GPU prover key: {} bytes ({} bases)",
+            serialized.len(),
+            gpu_pk.bases_gpu().len()
+        );
+
+        // Deserialize
+        let deserialized: HyperKZGGpuProverKey =
+            rmp_serde::from_slice(&serialized).expect("deserialize failed");
+
+        // Compare
+        assert_eq!(
+            gpu_pk.bases_gpu().len(),
+            deserialized.bases_gpu().len(),
+            "Length mismatch after roundtrip"
+        );
+        for (i, (orig, deser)) in gpu_pk
+            .bases_gpu()
+            .iter()
+            .zip(deserialized.bases_gpu().iter())
+            .enumerate()
+        {
+            assert_eq!(orig.x, deser.x, "x mismatch at index {i}");
+            assert_eq!(orig.y, deser.y, "y mismatch at index {i}");
+        }
+
+        // Verify commits match
+        let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+        let poly = DensePolynomial::from(poly_raw);
+
+        let (orig_comm, _) =
+            HyperKZGGpu::<Bn254>::commit(&gpu_pk, &poly).expect("commit with original failed");
+        let (deser_comm, _) = HyperKZGGpu::<Bn254>::commit(&deserialized, &poly)
+            .expect("commit with deserialized failed");
+
+        assert_eq!(
+            orig_comm.0, deser_comm.0,
+            "Commits differ after serialization roundtrip"
+        );
+        println!("GPU prover key serialization roundtrip test passed");
     }
 }

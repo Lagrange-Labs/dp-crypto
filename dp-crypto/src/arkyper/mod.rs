@@ -30,7 +30,9 @@ pub mod gpu_msm;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
 pub mod hyperkzg_gpu;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
-pub use hyperkzg_gpu::{gpu_setup, HyperKZGGpu};
+pub use hyperkzg_gpu::{
+    gpu_setup, HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGGpuSRS,
+};
 pub mod interface;
 pub mod msm;
 pub mod transcript;
