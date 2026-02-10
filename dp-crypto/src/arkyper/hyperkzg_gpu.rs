@@ -1120,28 +1120,111 @@ mod tests {
         }
     }
 
-    /// CPU end-to-end test from exported data: SRS generation, batch_commit, prove.
-    /// Loads one file at a time to minimize memory usage.
+    /// Pre-generate SRS files for measurement tests.
+    ///
+    /// Loads both data files (commit polys + open poly) to discover needed sizes,
+    /// generates a CPU SRS for each unique size, and saves to `/tmp/pcs_srs_{size}.bin`.
+    /// Run this once before the 4 measurement tests.
     #[test]
-    fn test_cpu_from_exported_data() {
+    fn test_generate_srs() {
         use crate::arkyper::{HyperKZGSRS, PcsCommitExport, PcsOpenExport};
+        use std::collections::BTreeSet;
+        use std::fs::File;
+        use std::io::BufReader;
         use std::time::Instant;
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(100);
+        let mut sizes = BTreeSet::new();
 
-        // ---- batch_commit ----
-        println!("[cpu] Loading commit polys...");
+        if let Ok(file) = File::open("/tmp/pcs_commit_polys.bin") {
+            let export: PcsCommitExport<Fr> =
+                rmp_serde::from_read(BufReader::new(file)).expect("deserialize commit polys failed");
+            let max_len = export.polys.iter().map(|e| e.evals.len()).max().unwrap();
+            sizes.insert(max_len);
+            println!(
+                "[generate-srs] commit polys: {} polys, max_len={}",
+                export.polys.len(),
+                max_len
+            );
+        } else {
+            println!("[generate-srs] No /tmp/pcs_commit_polys.bin found");
+        }
+
+        if let Ok(file) = File::open("/tmp/pcs_open_poly.bin") {
+            let export: PcsOpenExport<Fr> =
+                rmp_serde::from_read(BufReader::new(file)).expect("deserialize open poly failed");
+            let len = export.poly.evals.len();
+            sizes.insert(len);
+            println!("[generate-srs] open poly: len={}", len);
+        } else {
+            println!("[generate-srs] No /tmp/pcs_open_poly.bin found");
+        }
+
+        if sizes.is_empty() {
+            panic!("No data files found — cannot determine SRS sizes");
+        }
+
+        for size in &sizes {
+            println!("[generate-srs] Generating SRS for size={}...", size);
+            let t_gen = Instant::now();
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, *size);
+            let (cpu_pk, _vk) = srs.trim(*size);
+            let gen_time = t_gen.elapsed();
+            println!("[generate-srs] SRS generation: {:.2?}", gen_time);
+
+            let path = format!("/tmp/pcs_srs_{}.bin", size);
+            let t_write = Instant::now();
+            let data = rmp_serde::to_vec(&cpu_pk).expect("serialize cpu_pk failed");
+            std::fs::write(&path, &data).expect("write SRS file failed");
+            let write_time = t_write.elapsed();
+            println!(
+                "[generate-srs] Write {} bytes to {}: {:.2?}",
+                data.len(),
+                path,
+                write_time
+            );
+
+            // Roundtrip verify
+            let t_read = Instant::now();
+            let file = File::open(&path).expect("reopen SRS file failed");
+            let loaded: HyperKZGProverKey<Bn254> =
+                rmp_serde::from_read(BufReader::new(file)).expect("deserialize cpu_pk failed");
+            let read_time = t_read.elapsed();
+            assert_eq!(
+                loaded.g1_powers().len(),
+                cpu_pk.g1_powers().len(),
+                "roundtrip g1_powers len mismatch"
+            );
+            println!("[generate-srs] Roundtrip verify: {:.2?}", read_time);
+
+            println!(
+                "=== SRS size={}: generate {:.2?}, write {:.2?}, roundtrip {:.2?} ===",
+                size, gen_time, write_time, read_time
+            );
+        }
+    }
+
+    /// CPU batch_commit measurement from exported data.
+    /// Loads pre-generated SRS from disk (run test_generate_srs first).
+    #[test]
+    fn test_cpu_commit_from_exported_data() {
+        use crate::arkyper::PcsCommitExport;
+        use std::fs::File;
+        use std::io::BufReader;
+        use std::time::Instant;
+
+        println!("[cpu-commit] Loading commit polys...");
         let t0 = Instant::now();
         let (polys, num_polys, max_len) = {
-            let data = match std::fs::read("/tmp/pcs_commit_polys.bin") {
-                Ok(d) => d,
+            let file = match File::open("/tmp/pcs_commit_polys.bin") {
+                Ok(f) => f,
                 Err(_) => {
                     println!("No export file found, skipping");
                     return;
                 }
             };
             let export: PcsCommitExport<Fr> =
-                rmp_serde::from_slice(&data).expect("deserialize failed");
+                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
             let polys: Vec<DensePolynomial<Fr>> = export
                 .polys
                 .into_iter()
@@ -1151,57 +1234,89 @@ mod tests {
             let max_len = polys.iter().map(|p| p.len()).max().unwrap();
             (polys, num_polys, max_len)
         };
-        println!("[cpu] Loaded {} polys in {:.2?}", num_polys, t0.elapsed());
+        println!(
+            "[cpu-commit] Loaded {} polys in {:.2?}",
+            num_polys,
+            t0.elapsed()
+        );
 
-        println!("[cpu] Generating SRS (max_len={})...", max_len);
-        let t_srs = Instant::now();
-        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_len);
-        let (cpu_pk, _vk) = srs.trim(max_len);
-        println!("[cpu] SRS generated in {:.2?}", t_srs.elapsed());
+        let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
+        println!("[cpu-commit] Loading SRS from {}...", srs_path);
+        let t_load = Instant::now();
+        let file = File::open(&srs_path).unwrap_or_else(|e| {
+            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
+        });
+        let cpu_pk: HyperKZGProverKey<Bn254> =
+            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
+        let load_time = t_load.elapsed();
+        println!("[cpu-commit] SRS loaded: {:.2?}", load_time);
 
         let t_commit = Instant::now();
         let _commits =
             HyperKZG::<Bn254>::batch_commit(&cpu_pk, &polys).expect("CPU batch_commit failed");
         let commit_time = t_commit.elapsed();
-        println!("[cpu] batch_commit: {:.2?} ({} polys)", commit_time, num_polys);
 
-        // Free commit data before loading open data
-        drop(_commits);
-        drop(polys);
+        println!(
+            "=== CPU commit: load {:.2?}, batch_commit {:.2?} ({} polys) ===",
+            load_time, commit_time, num_polys
+        );
+    }
 
-        // ---- prove ----
-        println!("[cpu] Loading open poly...");
+    /// CPU prove measurement from exported data.
+    /// Loads pre-generated SRS from disk (run test_generate_srs first).
+    #[test]
+    fn test_cpu_open_from_exported_data() {
+        use crate::arkyper::PcsOpenExport;
+        use std::fs::File;
+        use std::io::BufReader;
+        use std::time::Instant;
+
+        println!("[cpu-open] Loading open poly...");
         let (poly, point) = {
-            let data = match std::fs::read("/tmp/pcs_open_poly.bin") {
-                Ok(d) => d,
+            let file = match File::open("/tmp/pcs_open_poly.bin") {
+                Ok(f) => f,
                 Err(_) => {
                     println!("No export file found, skipping");
                     return;
                 }
             };
             let export: PcsOpenExport<Fr> =
-                rmp_serde::from_slice(&data).expect("deserialize failed");
+                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
             (DensePolynomial::new(export.poly.evals), export.point)
         };
-        println!("[cpu] Loaded poly nv={}", poly.num_vars());
+        let max_len = poly.len();
+        println!("[cpu-open] Loaded poly nv={}", poly.num_vars());
+
+        let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
+        println!("[cpu-open] Loading SRS from {}...", srs_path);
+        let t_load = Instant::now();
+        let file = File::open(&srs_path).unwrap_or_else(|e| {
+            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
+        });
+        let cpu_pk: HyperKZGProverKey<Bn254> =
+            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
+        let load_time = t_load.elapsed();
+        println!("[cpu-open] SRS loaded: {:.2?}", load_time);
 
         let t_prove = Instant::now();
         let mut transcript = Blake3Transcript::new(b"ExportedTest");
         let _proof = HyperKZG::<Bn254>::prove(&cpu_pk, &poly, &point, None, &mut transcript)
             .expect("CPU prove failed");
         let prove_time = t_prove.elapsed();
-        println!("[cpu] prove: {:.2?}", prove_time);
 
-        println!("=== CPU: batch_commit {:.2?}, prove {:.2?} ===", commit_time, prove_time);
+        println!(
+            "=== CPU open: load {:.2?}, prove {:.2?} ===",
+            load_time, prove_time
+        );
     }
 
-    /// GPU end-to-end test from exported data using gpu_setup (GPU-native SRS).
-    /// SRS bases stay in GPU Montgomery format (`Vec<G1AffineM>`) throughout —
-    /// no CPU↔GPU format conversion in batch_commit or prove.
-    /// Loads one file at a time to minimize memory usage.
+    /// GPU batch_commit measurement from exported data.
+    /// Loads pre-generated SRS from disk and converts to GPU format.
     #[test]
-    fn test_gpu_from_exported_data() {
-        use crate::arkyper::{PcsCommitExport, PcsOpenExport};
+    fn test_gpu_commit_from_exported_data() {
+        use crate::arkyper::PcsCommitExport;
+        use std::fs::File;
+        use std::io::BufReader;
         use std::time::Instant;
 
         if Device::all().is_empty() {
@@ -1209,21 +1324,18 @@ mod tests {
             return;
         }
 
-        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(100);
-
-        // ---- batch_commit ----
-        println!("[gpu] Loading commit polys...");
+        println!("[gpu-commit] Loading commit polys...");
         let t0 = Instant::now();
         let (polys, num_polys, max_len) = {
-            let data = match std::fs::read("/tmp/pcs_commit_polys.bin") {
-                Ok(d) => d,
+            let file = match File::open("/tmp/pcs_commit_polys.bin") {
+                Ok(f) => f,
                 Err(_) => {
                     println!("No export file found, skipping");
                     return;
                 }
             };
             let export: PcsCommitExport<Fr> =
-                rmp_serde::from_slice(&data).expect("deserialize failed");
+                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
             let polys: Vec<DensePolynomial<Fr>> = export
                 .polys
                 .into_iter()
@@ -1233,52 +1345,88 @@ mod tests {
             let max_len = polys.iter().map(|p| p.len()).max().unwrap();
             (polys, num_polys, max_len)
         };
-        println!("[gpu] Loaded {} polys in {:.2?}", num_polys, t0.elapsed());
+        println!(
+            "[gpu-commit] Loaded {} polys in {:.2?}",
+            num_polys,
+            t0.elapsed()
+        );
 
-        // GPU-native SRS: bases generated and stored directly as Vec<G1AffineM>
-        println!("[gpu] Running gpu_setup (max_len={})...", max_len);
-        let t_srs = Instant::now();
-        let gpu_srs = gpu_setup(&mut rng, max_len).expect("gpu_setup failed");
-        let (gpu_pk, _vk) = gpu_srs.trim(max_len);
-        println!("[gpu] gpu_setup: {:.2?}", t_srs.elapsed());
+        let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
+        println!("[gpu-commit] Loading SRS from {}...", srs_path);
+        let t_load = Instant::now();
+        let file = File::open(&srs_path).unwrap_or_else(|e| {
+            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
+        });
+        let cpu_pk: HyperKZGProverKey<Bn254> =
+            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
+        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+        let load_time = t_load.elapsed();
+        println!("[gpu-commit] SRS loaded + converted: {:.2?}", load_time);
 
-        // batch_commit: gpu_pk.bases_gpu() flows directly to GPU, no conversion
         let t_commit = Instant::now();
         let _commits = HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys)
             .expect("GPU batch_commit failed");
         let commit_time = t_commit.elapsed();
-        println!("[gpu] batch_commit: {:.2?} ({} polys)", commit_time, num_polys);
 
-        // Free commit data before loading open data
-        drop(_commits);
-        drop(polys);
+        println!(
+            "=== GPU commit: load {:.2?}, batch_commit {:.2?} ({} polys) ===",
+            load_time, commit_time, num_polys
+        );
+    }
 
-        // ---- prove ----
-        println!("[gpu] Loading open poly...");
+    /// GPU prove measurement from exported data.
+    /// Loads pre-generated SRS from disk and converts to GPU format.
+    #[test]
+    fn test_gpu_open_from_exported_data() {
+        use crate::arkyper::PcsOpenExport;
+        use std::fs::File;
+        use std::io::BufReader;
+        use std::time::Instant;
+
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        println!("[gpu-open] Loading open poly...");
         let (poly, point) = {
-            let data = match std::fs::read("/tmp/pcs_open_poly.bin") {
-                Ok(d) => d,
+            let file = match File::open("/tmp/pcs_open_poly.bin") {
+                Ok(f) => f,
                 Err(_) => {
                     println!("No export file found, skipping");
                     return;
                 }
             };
             let export: PcsOpenExport<Fr> =
-                rmp_serde::from_slice(&data).expect("deserialize failed");
+                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
             (DensePolynomial::new(export.poly.evals), export.point)
         };
-        println!("[gpu] Loaded poly nv={}", poly.num_vars());
+        let max_len = poly.len();
+        println!("[gpu-open] Loaded poly nv={}", poly.num_vars());
 
-        // prove: gpu_pk.bases_gpu() flows directly via ensure_bases_uploaded_gpu
+        let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
+        println!("[gpu-open] Loading SRS from {}...", srs_path);
+        let t_load = Instant::now();
+        let file = File::open(&srs_path).unwrap_or_else(|e| {
+            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
+        });
+        let cpu_pk: HyperKZGProverKey<Bn254> =
+            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
+        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+        let load_time = t_load.elapsed();
+        println!("[gpu-open] SRS loaded + converted: {:.2?}", load_time);
+
         let t_prove = Instant::now();
         let mut transcript = Blake3Transcript::new(b"ExportedTest");
         let _proof =
             HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut transcript)
                 .expect("GPU prove failed");
         let prove_time = t_prove.elapsed();
-        println!("[gpu] prove: {:.2?}", prove_time);
 
-        println!("=== GPU: batch_commit {:.2?}, prove {:.2?} ===", commit_time, prove_time);
+        println!(
+            "=== GPU open: load {:.2?}, prove {:.2?} ===",
+            load_time, prove_time
+        );
     }
 
     /// Batch commit comparison test.
