@@ -1120,6 +1120,30 @@ mod tests {
         }
     }
 
+    /// Load g1_powers from a SRS file written by test_generate_srs,
+    /// then convert to GPU prover key.
+    fn load_gpu_pk_from_file(path: &str) -> HyperKZGGpuProverKey {
+        use ark_serialize::CanonicalDeserialize;
+        use std::fs::File;
+        use std::io::BufReader;
+
+        let mut reader = BufReader::new(
+            File::open(path).unwrap_or_else(|e| {
+                panic!("SRS file not found at {path}: {e}. Run test_generate_srs first.")
+            }),
+        );
+        let powers: Vec<G1Affine> =
+            CanonicalDeserialize::deserialize_compressed(&mut reader)
+                .expect("deserialize g1_powers failed");
+        let cpu_pk = HyperKZGProverKey {
+            kzg_pk: ark_poly_commit::kzg10::Powers {
+                powers_of_g: std::borrow::Cow::Owned(powers),
+                powers_of_gamma_g: std::borrow::Cow::Owned(vec![]),
+            },
+        };
+        HyperKZGGpuProverKey::from_cpu(&cpu_pk)
+    }
+
     /// GPU batch_commit measurement from exported data.
     /// Loads pre-generated SRS from disk and converts to GPU format.
     #[test]
@@ -1164,12 +1188,7 @@ mod tests {
         let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
         println!("[gpu-commit] Loading SRS from {}...", srs_path);
         let t_load = Instant::now();
-        let file = File::open(&srs_path).unwrap_or_else(|e| {
-            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
-        });
-        let cpu_pk: HyperKZGProverKey<Bn254> =
-            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
-        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+        let gpu_pk = load_gpu_pk_from_file(&srs_path);
         let load_time = t_load.elapsed();
         println!("[gpu-commit] SRS loaded + converted: {:.2?}", load_time);
 
@@ -1217,12 +1236,7 @@ mod tests {
         let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
         println!("[gpu-open] Loading SRS from {}...", srs_path);
         let t_load = Instant::now();
-        let file = File::open(&srs_path).unwrap_or_else(|e| {
-            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
-        });
-        let cpu_pk: HyperKZGProverKey<Bn254> =
-            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
-        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+        let gpu_pk = load_gpu_pk_from_file(&srs_path);
         let load_time = t_load.elapsed();
         println!("[gpu-open] SRS loaded + converted: {:.2?}", load_time);
 

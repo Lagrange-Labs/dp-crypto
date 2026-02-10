@@ -699,9 +699,10 @@ mod tests {
     /// Run this once before the measurement tests.
     #[test]
     fn test_generate_srs() {
+        use ark_bn254::G1Affine;
         use std::collections::BTreeSet;
         use std::fs::File;
-        use std::io::{BufReader, Write};
+        use std::io::{BufReader, BufWriter, Write};
         use std::time::Instant;
 
         macro_rules! log {
@@ -726,7 +727,7 @@ mod tests {
             let max_len = export.polys.iter().map(|e| e.evals.len()).max().unwrap();
             sizes.insert(max_len);
             log!(
-                "[generate-srs] commit polys: {} polys, max_len={} (loaded in {:.2?})",
+                "[generate-srs] commit polys: {} polys, max_len={} ({:.2?})",
                 export.polys.len(),
                 max_len,
                 t.elapsed()
@@ -743,11 +744,7 @@ mod tests {
                     .expect("deserialize open poly failed");
             let len = export.poly.evals.len();
             sizes.insert(len);
-            log!(
-                "[generate-srs] open poly: len={} (loaded in {:.2?})",
-                len,
-                t.elapsed()
-            );
+            log!("[generate-srs] open poly: len={} ({:.2?})", len, t.elapsed());
         } else {
             log!("[generate-srs] No /tmp/pcs_open_poly.bin found");
         }
@@ -762,56 +759,93 @@ mod tests {
         );
 
         for size in &sizes {
-            log!("[generate-srs] Generating SRS for size={} ({} points)...", size, size);
+            // Delete existing file first
+            let path = format!("/tmp/pcs_srs_{}.bin", size);
+            if std::path::Path::new(&path).exists() {
+                std::fs::remove_file(&path).expect("failed to delete old SRS file");
+                log!("[generate-srs] Deleted existing {}", path);
+            }
+
+            log!("[generate-srs] Generating SRS for size={}...", size);
             let t_gen = Instant::now();
             let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, *size);
-            log!("[generate-srs]   SRS::setup done: {:.2?}", t_gen.elapsed());
+            log!("[generate-srs]   SRS::setup: {:.2?}", t_gen.elapsed());
             let t_trim = Instant::now();
             let (cpu_pk, _vk) = srs.trim(*size);
-            log!("[generate-srs]   trim done: {:.2?}", t_trim.elapsed());
+            log!("[generate-srs]   trim: {:.2?} ({} g1_powers)", t_trim.elapsed(), cpu_pk.g1_powers().len());
             let gen_time = t_gen.elapsed();
-            log!(
-                "[generate-srs]   pk has {} g1_powers",
-                cpu_pk.g1_powers().len()
-            );
 
-            let path = format!("/tmp/pcs_srs_{}.bin", size);
-            log!("[generate-srs] Serializing pk to {}...", path);
+            // Serialize g1_powers using arkworks CanonicalSerialize (streams compressed
+            // points directly to disk — no 4GB msgpack bin32 limit, ~2x smaller files).
+            log!("[generate-srs] Writing g1_powers to {} (compressed)...", path);
             let t_write = Instant::now();
-            let data = rmp_serde::to_vec(&cpu_pk).expect("serialize cpu_pk failed");
-            log!(
-                "[generate-srs]   rmp_serde::to_vec: {} bytes in {:.2?}",
-                data.len(),
-                t_write.elapsed()
-            );
-            let t_disk = Instant::now();
-            std::fs::write(&path, &data).expect("write SRS file failed");
+            {
+                let mut writer = BufWriter::new(
+                    File::create(&path).expect("create SRS file failed"),
+                );
+                cpu_pk
+                    .g1_powers()
+                    .serialize_compressed(&mut writer)
+                    .expect("serialize g1_powers failed");
+                writer.flush().unwrap();
+            }
+            let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
             let write_time = t_write.elapsed();
-            log!("[generate-srs]   fs::write: {:.2?}", t_disk.elapsed());
+            log!(
+                "[generate-srs]   wrote {} bytes ({:.2?})",
+                file_size,
+                write_time
+            );
 
             // Roundtrip verify
             log!("[generate-srs] Roundtrip verification...");
             let t_read = Instant::now();
-            let file = File::open(&path).expect("reopen SRS file failed");
-            let loaded: HyperKZGProverKey<Bn254> =
-                rmp_serde::from_read(BufReader::new(file))
-                    .expect("deserialize cpu_pk failed");
+            let loaded_powers: Vec<G1Affine> = {
+                let mut reader = BufReader::new(
+                    File::open(&path).expect("reopen SRS file failed"),
+                );
+                CanonicalDeserialize::deserialize_compressed(&mut reader)
+                    .expect("deserialize g1_powers failed")
+            };
             let read_time = t_read.elapsed();
             assert_eq!(
-                loaded.g1_powers().len(),
+                loaded_powers.len(),
                 cpu_pk.g1_powers().len(),
                 "roundtrip g1_powers len mismatch"
             );
             log!(
                 "[generate-srs]   read+deserialize: {:.2?}, {} g1_powers OK",
                 read_time,
-                loaded.g1_powers().len()
+                loaded_powers.len()
             );
 
             log!(
                 "=== SRS size={}: generate {:.2?}, write {:.2?}, roundtrip {:.2?} ===",
                 size, gen_time, write_time, read_time
             );
+        }
+    }
+
+    /// Load g1_powers from a SRS file written by test_generate_srs.
+    /// Uses arkworks CanonicalDeserialize (compressed format).
+    fn load_srs_from_file(path: &str) -> HyperKZGProverKey<Bn254> {
+        use ark_bn254::G1Affine;
+        use std::fs::File;
+        use std::io::BufReader;
+
+        let mut reader = BufReader::new(
+            File::open(path).unwrap_or_else(|e| {
+                panic!("SRS file not found at {path}: {e}. Run test_generate_srs first.")
+            }),
+        );
+        let powers: Vec<G1Affine> =
+            CanonicalDeserialize::deserialize_compressed(&mut reader)
+                .expect("deserialize g1_powers failed");
+        HyperKZGProverKey {
+            kzg_pk: Powers {
+                powers_of_g: std::borrow::Cow::Owned(powers),
+                powers_of_gamma_g: std::borrow::Cow::Owned(vec![]),
+            },
         }
     }
 
@@ -853,11 +887,7 @@ mod tests {
         let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
         println!("[cpu-commit] Loading SRS from {}...", srs_path);
         let t_load = Instant::now();
-        let file = File::open(&srs_path).unwrap_or_else(|e| {
-            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
-        });
-        let cpu_pk: HyperKZGProverKey<Bn254> =
-            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
+        let cpu_pk = load_srs_from_file(&srs_path);
         let load_time = t_load.elapsed();
         println!("[cpu-commit] SRS loaded: {:.2?}", load_time);
 
@@ -899,11 +929,7 @@ mod tests {
         let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
         println!("[cpu-open] Loading SRS from {}...", srs_path);
         let t_load = Instant::now();
-        let file = File::open(&srs_path).unwrap_or_else(|e| {
-            panic!("SRS file not found at {srs_path}: {e}. Run test_generate_srs first.")
-        });
-        let cpu_pk: HyperKZGProverKey<Bn254> =
-            rmp_serde::from_read(BufReader::new(file)).expect("deserialize SRS failed");
+        let cpu_pk = load_srs_from_file(&srs_path);
         let load_time = t_load.elapsed();
         println!("[cpu-open] SRS loaded: {:.2?}", load_time);
 
