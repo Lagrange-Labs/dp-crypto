@@ -931,12 +931,16 @@ mod tests {
 
     /// Test batch_commit from exported deep-prove-private data (CPU vs GPU).
     #[test]
-    #[ignore] // Requires /tmp/pcs_commit_polys.bin from deep-prove-private benchmark
     fn test_commit_from_exported_data() {
+        use std::time::Instant;
+
         if Device::all().is_empty() {
             println!("No GPU available, skipping test");
             return;
         }
+
+        println!("[commit] Loading exported data from /tmp/pcs_commit_polys.bin...");
+        let t0 = Instant::now();
         let data = match std::fs::read("/tmp/pcs_commit_polys.bin") {
             Ok(d) => d,
             Err(_) => {
@@ -953,22 +957,35 @@ mod tests {
             .into_iter()
             .map(|e| DensePolynomial::new(e.evals))
             .collect();
-
-        eprintln!(
-            "Loaded {} polys, sizes: {:?}",
+        println!(
+            "[commit] Loaded {} polys (sizes: {:?}) in {:.2?}",
             polys.len(),
-            polys.iter().map(|p| p.num_vars()).collect::<Vec<_>>()
+            polys.iter().map(|p| p.num_vars()).collect::<Vec<_>>(),
+            t0.elapsed()
         );
 
         let max_len = polys.iter().map(|p| p.len()).max().unwrap();
+
+        println!("[commit] Generating SRS (max_len={})...", max_len);
+        let t_srs = Instant::now();
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(100);
         let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_len);
         let (pk, _) = srs.trim(max_len);
+        println!("[commit] SRS generated in {:.2?}", t_srs.elapsed());
 
+        println!("[commit] Running CPU batch_commit...");
+        let t_cpu = Instant::now();
         let cpu_commits =
             HyperKZG::<Bn254>::batch_commit(&pk, &polys).expect("CPU commit failed");
+        let cpu_time = t_cpu.elapsed();
+        println!("[commit] CPU batch_commit done in {:.2?}", cpu_time);
+
+        println!("[commit] Running GPU batch_commit...");
+        let t_gpu = Instant::now();
         let gpu_commits =
             HyperKZGGpu::<Bn254>::batch_commit(&pk, &polys).expect("GPU commit failed");
+        let gpu_time = t_gpu.elapsed();
+        println!("[commit] GPU batch_commit done in {:.2?}", gpu_time);
 
         assert_eq!(cpu_commits.len(), gpu_commits.len());
         for (i, ((cpu_c, _), (gpu_c, _))) in
@@ -976,17 +993,30 @@ mod tests {
         {
             assert_eq!(cpu_c.0, gpu_c.0, "Commit {} differs between CPU and GPU", i);
         }
-        eprintln!("All {} commitments match!", polys.len());
+
+        println!();
+        println!("=== COMMIT RESULTS ===");
+        println!("  CPU: {:.2?}", cpu_time);
+        println!("  GPU: {:.2?}", gpu_time);
+        println!(
+            "  Speedup: {:.2}x",
+            cpu_time.as_secs_f64() / gpu_time.as_secs_f64()
+        );
+        println!("  All {} commitments match!", polys.len());
     }
 
     /// Test open/prove from exported deep-prove-private data (CPU vs GPU).
     #[test]
-    #[ignore] // Requires /tmp/pcs_open_poly.bin from deep-prove-private benchmark
     fn test_open_from_exported_data() {
+        use std::time::Instant;
+
         if Device::all().is_empty() {
             println!("No GPU available, skipping test");
             return;
         }
+
+        println!("[open] Loading exported data from /tmp/pcs_open_poly.bin...");
+        let t0 = Instant::now();
         let data = match std::fs::read("/tmp/pcs_open_poly.bin") {
             Ok(d) => d,
             Err(_) => {
@@ -1000,33 +1030,52 @@ mod tests {
             rmp_serde::from_slice(&data).expect("deserialize failed");
         let poly = DensePolynomial::new(export.poly.evals);
         let point = export.point;
-
-        eprintln!(
-            "Loaded poly nv={}, point_len={}",
+        println!(
+            "[open] Loaded poly nv={}, point_len={} in {:.2?}",
             poly.num_vars(),
-            point.len()
+            point.len(),
+            t0.elapsed()
         );
 
+        println!("[open] Generating SRS (poly_len={})...", poly.len());
+        let t_srs = Instant::now();
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(200);
         let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, poly.len());
         let (pk, vk) = srs.trim(poly.len());
+        println!("[open] SRS generated in {:.2?}", t_srs.elapsed());
 
+        println!("[open] Evaluating polynomial...");
+        let t_eval = Instant::now();
         let eval = poly.evaluate(&point).expect("eval failed");
+        println!("[open] Evaluation done in {:.2?}", t_eval.elapsed());
+
+        println!("[open] Computing commitment...");
+        let t_comm = Instant::now();
         let (comm, _) = HyperKZG::<Bn254>::commit(&pk, &poly).expect("commit failed");
+        println!("[open] Commitment done in {:.2?}", t_comm.elapsed());
 
         // CPU prove
+        println!("[open] Running CPU open (prove)...");
+        let t_cpu = Instant::now();
         let mut cpu_transcript = Blake3Transcript::new(b"ExportedTest");
         let cpu_proof =
             HyperKZGGpu::<Bn254>::open_cpu(&pk, &poly, &point, &eval, &mut cpu_transcript)
                 .expect("CPU open failed");
+        let cpu_time = t_cpu.elapsed();
+        println!("[open] CPU open done in {:.2?}", cpu_time);
 
         // GPU prove
+        println!("[open] Running GPU open (prove)...");
+        let t_gpu = Instant::now();
         let mut gpu_transcript = Blake3Transcript::new(b"ExportedTest");
         let gpu_proof =
             HyperKZGGpu::<Bn254>::open_gpu(&pk, &poly, &point, &eval, &mut gpu_transcript)
                 .expect("GPU open failed");
+        let gpu_time = t_gpu.elapsed();
+        println!("[open] GPU open done in {:.2?}", gpu_time);
 
         // Compare proof components
+        println!("[open] Comparing proof components...");
         assert_eq!(
             cpu_proof.coms.len(),
             gpu_proof.coms.len(),
@@ -1042,14 +1091,29 @@ mod tests {
         assert_eq!(cpu_proof.v, gpu_proof.v, "v values differ");
 
         // Verify both proofs
+        println!("[open] Verifying CPU proof...");
+        let t_vcpu = Instant::now();
         let mut t = Blake3Transcript::new(b"ExportedTest");
         HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &cpu_proof, &mut t)
             .expect("CPU proof verification failed");
+        println!("[open] CPU proof verified in {:.2?}", t_vcpu.elapsed());
+
+        println!("[open] Verifying GPU proof...");
+        let t_vgpu = Instant::now();
         let mut t = Blake3Transcript::new(b"ExportedTest");
         HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &gpu_proof, &mut t)
             .expect("GPU proof verification failed");
+        println!("[open] GPU proof verified in {:.2?}", t_vgpu.elapsed());
 
-        eprintln!("CPU and GPU proofs match and verify!");
+        println!();
+        println!("=== OPEN RESULTS ===");
+        println!("  CPU open: {:.2?}", cpu_time);
+        println!("  GPU open: {:.2?}", gpu_time);
+        println!(
+            "  Speedup: {:.2}x",
+            cpu_time.as_secs_f64() / gpu_time.as_secs_f64()
+        );
+        println!("  Proofs match and both verify!");
     }
 
     /// Batch commit comparison test.
