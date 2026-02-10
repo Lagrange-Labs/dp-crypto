@@ -538,43 +538,74 @@ impl<P: Pairing> AppendToTranscript for HyperKZGCommitment<P> {
 // ── PCS data export structs (for CPU vs GPU experimentation) ──
 
 /// A single polynomial's evaluations, for serialization.
-#[derive(Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "F: ark_serialize::CanonicalSerialize",
-    deserialize = "F: ark_serialize::CanonicalDeserialize"
-))]
 pub struct PolyExportEntry<F: ark_ff::Field> {
     pub num_vars: usize,
-    #[serde(
-        serialize_with = "crate::serialization::serialize",
-        deserialize_with = "crate::serialization::deserialize"
-    )]
     pub evals: Vec<F>,
 }
 
 /// Exported data from PCS::batch_commit.
-#[derive(Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "F: ark_serialize::CanonicalSerialize",
-    deserialize = "F: ark_serialize::CanonicalDeserialize"
-))]
 pub struct PcsCommitExport<F: ark_ff::Field> {
     pub polys: Vec<PolyExportEntry<F>>,
 }
 
+impl<F: ark_ff::Field> PcsCommitExport<F> {
+    /// Write using arkworks CanonicalSerialize (fast, no 4GB limit).
+    pub fn write_canonical<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        let num_polys = self.polys.len() as u64;
+        num_polys.serialize_compressed(&mut *writer)?;
+        for poly in &self.polys {
+            let num_vars = poly.num_vars as u64;
+            num_vars.serialize_compressed(&mut *writer)?;
+            poly.evals.serialize_compressed(&mut *writer)?;
+        }
+        Ok(())
+    }
+
+    /// Read using arkworks CanonicalDeserialize.
+    pub fn read_canonical<R: std::io::Read>(reader: &mut R) -> anyhow::Result<Self> {
+        let num_polys = u64::deserialize_compressed(&mut *reader)? as usize;
+        let mut polys = Vec::with_capacity(num_polys);
+        for _ in 0..num_polys {
+            let num_vars = u64::deserialize_compressed(&mut *reader)? as usize;
+            let evals: Vec<F> = CanonicalDeserialize::deserialize_compressed(&mut *reader)?;
+            polys.push(PolyExportEntry { num_vars, evals });
+        }
+        Ok(PcsCommitExport { polys })
+    }
+}
+
 /// Exported data from PCS::prove (single aggregated polynomial + opening point).
-#[derive(Serialize, Deserialize)]
-#[serde(bound(
-    serialize = "F: ark_serialize::CanonicalSerialize",
-    deserialize = "F: ark_serialize::CanonicalDeserialize"
-))]
 pub struct PcsOpenExport<F: ark_ff::Field> {
     pub poly: PolyExportEntry<F>,
-    #[serde(
-        serialize_with = "crate::serialization::serialize",
-        deserialize_with = "crate::serialization::deserialize"
-    )]
     pub point: Vec<F>,
+}
+
+impl<F: ark_ff::Field> PcsOpenExport<F> {
+    /// Write using arkworks CanonicalSerialize (fast, no 4GB limit).
+    pub fn write_canonical<W: std::io::Write>(
+        &self,
+        writer: &mut W,
+    ) -> anyhow::Result<()> {
+        let num_vars = self.poly.num_vars as u64;
+        num_vars.serialize_compressed(&mut *writer)?;
+        self.poly.evals.serialize_compressed(&mut *writer)?;
+        self.point.serialize_compressed(&mut *writer)?;
+        Ok(())
+    }
+
+    /// Read using arkworks CanonicalDeserialize.
+    pub fn read_canonical<R: std::io::Read>(reader: &mut R) -> anyhow::Result<Self> {
+        let num_vars = u64::deserialize_compressed(&mut *reader)? as usize;
+        let evals: Vec<F> = CanonicalDeserialize::deserialize_compressed(&mut *reader)?;
+        let point: Vec<F> = CanonicalDeserialize::deserialize_compressed(&mut *reader)?;
+        Ok(PcsOpenExport {
+            poly: PolyExportEntry { num_vars, evals },
+            point,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -722,7 +753,7 @@ mod tests {
             log!("[generate-srs] Deserializing /tmp/pcs_commit_polys.bin...");
             let t = Instant::now();
             let export: PcsCommitExport<Fr> =
-                rmp_serde::from_read(BufReader::new(file))
+                PcsCommitExport::read_canonical(&mut BufReader::new(file))
                     .expect("deserialize commit polys failed");
             let max_len = export.polys.iter().map(|e| e.evals.len()).max().unwrap();
             sizes.insert(max_len);
@@ -740,7 +771,7 @@ mod tests {
             log!("[generate-srs] Deserializing /tmp/pcs_open_poly.bin...");
             let t = Instant::now();
             let export: PcsOpenExport<Fr> =
-                rmp_serde::from_read(BufReader::new(file))
+                PcsOpenExport::read_canonical(&mut BufReader::new(file))
                     .expect("deserialize open poly failed");
             let len = export.poly.evals.len();
             sizes.insert(len);
@@ -868,7 +899,8 @@ mod tests {
                 }
             };
             let export: PcsCommitExport<Fr> =
-                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
+                PcsCommitExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize failed");
             let polys: Vec<DensePolynomial<Fr>> = export
                 .polys
                 .into_iter()
@@ -920,7 +952,8 @@ mod tests {
                 }
             };
             let export: PcsOpenExport<Fr> =
-                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
+                PcsOpenExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize failed");
             (DensePolynomial::new(export.poly.evals), export.point)
         };
         let max_len = poly.len();

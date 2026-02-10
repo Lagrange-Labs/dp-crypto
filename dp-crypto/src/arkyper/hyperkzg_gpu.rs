@@ -1169,7 +1169,8 @@ mod tests {
                 }
             };
             let export: PcsCommitExport<Fr> =
-                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
+                PcsCommitExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize failed");
             let polys: Vec<DensePolynomial<Fr>> = export
                 .polys
                 .into_iter()
@@ -1227,7 +1228,8 @@ mod tests {
                 }
             };
             let export: PcsOpenExport<Fr> =
-                rmp_serde::from_read(BufReader::new(file)).expect("deserialize failed");
+                PcsOpenExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize failed");
             (DensePolynomial::new(export.poly.evals), export.point)
         };
         let max_len = poly.len();
