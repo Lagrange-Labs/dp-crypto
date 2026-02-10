@@ -533,6 +533,48 @@ impl<P: Pairing> AppendToTranscript for HyperKZGCommitment<P> {
     }
 }
 
+// ── PCS data export structs (for CPU vs GPU experimentation) ──
+
+/// A single polynomial's evaluations, for serialization.
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: ark_serialize::CanonicalSerialize",
+    deserialize = "F: ark_serialize::CanonicalDeserialize"
+))]
+pub struct PolyExportEntry<F: ark_ff::Field> {
+    pub num_vars: usize,
+    #[serde(
+        serialize_with = "crate::serialization::serialize",
+        deserialize_with = "crate::serialization::deserialize"
+    )]
+    pub evals: Vec<F>,
+}
+
+/// Exported data from PCS::batch_commit.
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: ark_serialize::CanonicalSerialize",
+    deserialize = "F: ark_serialize::CanonicalDeserialize"
+))]
+pub struct PcsCommitExport<F: ark_ff::Field> {
+    pub polys: Vec<PolyExportEntry<F>>,
+}
+
+/// Exported data from PCS::prove (single aggregated polynomial + opening point).
+#[derive(Serialize, Deserialize)]
+#[serde(bound(
+    serialize = "F: ark_serialize::CanonicalSerialize",
+    deserialize = "F: ark_serialize::CanonicalDeserialize"
+))]
+pub struct PcsOpenExport<F: ark_ff::Field> {
+    pub poly: PolyExportEntry<F>,
+    #[serde(
+        serialize_with = "crate::serialization::serialize",
+        deserialize_with = "crate::serialization::deserialize"
+    )]
+    pub point: Vec<F>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

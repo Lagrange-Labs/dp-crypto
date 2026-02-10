@@ -929,6 +929,129 @@ mod tests {
         }
     }
 
+    /// Test batch_commit from exported deep-prove-private data (CPU vs GPU).
+    #[test]
+    #[ignore] // Requires /tmp/pcs_commit_polys.bin from deep-prove-private benchmark
+    fn test_commit_from_exported_data() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+        let data = match std::fs::read("/tmp/pcs_commit_polys.bin") {
+            Ok(d) => d,
+            Err(_) => {
+                println!("No export file found, skipping");
+                return;
+            }
+        };
+
+        use crate::arkyper::{HyperKZGSRS, PcsCommitExport};
+        let export: PcsCommitExport<Fr> =
+            rmp_serde::from_slice(&data).expect("deserialize failed");
+        let polys: Vec<DensePolynomial<Fr>> = export
+            .polys
+            .into_iter()
+            .map(|e| DensePolynomial::new(e.evals))
+            .collect();
+
+        eprintln!(
+            "Loaded {} polys, sizes: {:?}",
+            polys.len(),
+            polys.iter().map(|p| p.num_vars()).collect::<Vec<_>>()
+        );
+
+        let max_len = polys.iter().map(|p| p.len()).max().unwrap();
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(100);
+        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_len);
+        let (pk, _) = srs.trim(max_len);
+
+        let cpu_commits =
+            HyperKZG::<Bn254>::batch_commit(&pk, &polys).expect("CPU commit failed");
+        let gpu_commits =
+            HyperKZGGpu::<Bn254>::batch_commit(&pk, &polys).expect("GPU commit failed");
+
+        assert_eq!(cpu_commits.len(), gpu_commits.len());
+        for (i, ((cpu_c, _), (gpu_c, _))) in
+            cpu_commits.iter().zip(gpu_commits.iter()).enumerate()
+        {
+            assert_eq!(cpu_c.0, gpu_c.0, "Commit {} differs between CPU and GPU", i);
+        }
+        eprintln!("All {} commitments match!", polys.len());
+    }
+
+    /// Test open/prove from exported deep-prove-private data (CPU vs GPU).
+    #[test]
+    #[ignore] // Requires /tmp/pcs_open_poly.bin from deep-prove-private benchmark
+    fn test_open_from_exported_data() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+        let data = match std::fs::read("/tmp/pcs_open_poly.bin") {
+            Ok(d) => d,
+            Err(_) => {
+                println!("No export file found, skipping");
+                return;
+            }
+        };
+
+        use crate::arkyper::{HyperKZGSRS, PcsOpenExport};
+        let export: PcsOpenExport<Fr> =
+            rmp_serde::from_slice(&data).expect("deserialize failed");
+        let poly = DensePolynomial::new(export.poly.evals);
+        let point = export.point;
+
+        eprintln!(
+            "Loaded poly nv={}, point_len={}",
+            poly.num_vars(),
+            point.len()
+        );
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(200);
+        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, poly.len());
+        let (pk, vk) = srs.trim(poly.len());
+
+        let eval = poly.evaluate(&point).expect("eval failed");
+        let (comm, _) = HyperKZG::<Bn254>::commit(&pk, &poly).expect("commit failed");
+
+        // CPU prove
+        let mut cpu_transcript = Blake3Transcript::new(b"ExportedTest");
+        let cpu_proof =
+            HyperKZGGpu::<Bn254>::open_cpu(&pk, &poly, &point, &eval, &mut cpu_transcript)
+                .expect("CPU open failed");
+
+        // GPU prove
+        let mut gpu_transcript = Blake3Transcript::new(b"ExportedTest");
+        let gpu_proof =
+            HyperKZGGpu::<Bn254>::open_gpu(&pk, &poly, &point, &eval, &mut gpu_transcript)
+                .expect("GPU open failed");
+
+        // Compare proof components
+        assert_eq!(
+            cpu_proof.coms.len(),
+            gpu_proof.coms.len(),
+            "coms count differs"
+        );
+        for (i, (c, g)) in cpu_proof.coms.iter().zip(gpu_proof.coms.iter()).enumerate() {
+            assert_eq!(c, g, "com[{}] differs", i);
+        }
+        assert_eq!(cpu_proof.w.len(), gpu_proof.w.len(), "w count differs");
+        for (i, (c, g)) in cpu_proof.w.iter().zip(gpu_proof.w.iter()).enumerate() {
+            assert_eq!(c, g, "w[{}] differs", i);
+        }
+        assert_eq!(cpu_proof.v, gpu_proof.v, "v values differ");
+
+        // Verify both proofs
+        let mut t = Blake3Transcript::new(b"ExportedTest");
+        HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &cpu_proof, &mut t)
+            .expect("CPU proof verification failed");
+        let mut t = Blake3Transcript::new(b"ExportedTest");
+        HyperKZG::<Bn254>::verify(&vk, &comm, &point, &eval, &gpu_proof, &mut t)
+            .expect("GPU proof verification failed");
+
+        eprintln!("CPU and GPU proofs match and verify!");
+    }
+
     /// Batch commit comparison test.
     #[test]
     fn test_batch_commit_trait_gpu_vs_cpu() {
