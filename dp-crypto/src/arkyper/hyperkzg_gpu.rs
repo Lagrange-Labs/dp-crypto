@@ -283,6 +283,10 @@ pub fn gpu_batch_commit(
     let fused = holder.fused.as_ref().unwrap();
     let cpu_bases = holder.cached_cpu_bases.as_ref().map(|(_, v)| v.as_slice());
 
+    eprintln!("[gpu_batch_commit] {} size groups: {:?}",
+        by_size.len(),
+        by_size.iter().map(|(len, g)| (*len, g.len())).collect::<Vec<_>>());
+
     for (&poly_len, group) in &by_size {
         if poly_len <= GPU_MSM_THRESHOLD {
             // CPU fallback: rayon parallel across polys
