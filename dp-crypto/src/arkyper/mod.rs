@@ -30,9 +30,7 @@ pub mod gpu_msm;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
 pub mod hyperkzg_gpu;
 #[cfg(any(feature = "cuda", feature = "opencl"))]
-pub use hyperkzg_gpu::{
-    gpu_setup, HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGGpuSRS,
-};
+pub use hyperkzg_gpu::{HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGGpuSRS, gpu_setup};
 pub mod interface;
 pub mod msm;
 pub mod transcript;
@@ -550,10 +548,7 @@ pub struct PcsCommitExport<F: ark_ff::Field> {
 
 impl<F: ark_ff::Field> PcsCommitExport<F> {
     /// Write using arkworks CanonicalSerialize (fast, no 4GB limit).
-    pub fn write_canonical<W: std::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> anyhow::Result<()> {
+    pub fn write_canonical<W: std::io::Write>(&self, writer: &mut W) -> anyhow::Result<()> {
         let num_polys = self.polys.len() as u64;
         num_polys.serialize_compressed(&mut *writer)?;
         for poly in &self.polys {
@@ -585,10 +580,7 @@ pub struct PcsOpenExport<F: ark_ff::Field> {
 
 impl<F: ark_ff::Field> PcsOpenExport<F> {
     /// Write using arkworks CanonicalSerialize (fast, no 4GB limit).
-    pub fn write_canonical<W: std::io::Write>(
-        &self,
-        writer: &mut W,
-    ) -> anyhow::Result<()> {
+    pub fn write_canonical<W: std::io::Write>(&self, writer: &mut W) -> anyhow::Result<()> {
         let num_vars = self.poly.num_vars as u64;
         num_vars.serialize_compressed(&mut *writer)?;
         self.poly.evals.serialize_compressed(&mut *writer)?;
@@ -610,6 +602,8 @@ impl<F: ark_ff::Field> PcsOpenExport<F> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
     use ark_bn254::{Bn254, Fr};
@@ -743,8 +737,7 @@ mod tests {
             }};
         }
 
-        let mut rng =
-            <rand_chacha::ChaCha20Rng as ark_std::rand::SeedableRng>::seed_from_u64(100);
+        let mut rng = <rand_chacha::ChaCha20Rng as ark_std::rand::SeedableRng>::seed_from_u64(100);
         let mut sizes = BTreeSet::new();
 
         log!("[generate-srs] Scanning data files for needed SRS sizes...");
@@ -775,7 +768,11 @@ mod tests {
                     .expect("deserialize open poly failed");
             let len = export.poly.evals.len();
             sizes.insert(len);
-            log!("[generate-srs] open poly: len={} ({:.2?})", len, t.elapsed());
+            log!(
+                "[generate-srs] open poly: len={} ({:.2?})",
+                len,
+                t.elapsed()
+            );
         } else {
             log!("[generate-srs] No /tmp/pcs_open_poly.bin found");
         }
@@ -803,17 +800,23 @@ mod tests {
             log!("[generate-srs]   SRS::setup: {:.2?}", t_gen.elapsed());
             let t_trim = Instant::now();
             let (cpu_pk, _vk) = srs.trim(*size);
-            log!("[generate-srs]   trim: {:.2?} ({} g1_powers)", t_trim.elapsed(), cpu_pk.g1_powers().len());
+            log!(
+                "[generate-srs]   trim: {:.2?} ({} g1_powers)",
+                t_trim.elapsed(),
+                cpu_pk.g1_powers().len()
+            );
             let gen_time = t_gen.elapsed();
 
             // Serialize g1_powers using arkworks CanonicalSerialize (streams compressed
             // points directly to disk — no 4GB msgpack bin32 limit, ~2x smaller files).
-            log!("[generate-srs] Writing g1_powers to {} (compressed)...", path);
+            log!(
+                "[generate-srs] Writing g1_powers to {} (compressed)...",
+                path
+            );
             let t_write = Instant::now();
             {
-                let mut writer = BufWriter::new(
-                    File::create(&path).expect("create SRS file failed"),
-                );
+                let mut writer =
+                    BufWriter::new(File::create(&path).expect("create SRS file failed"));
                 cpu_pk
                     .g1_powers()
                     .serialize_compressed(&mut writer)
@@ -832,9 +835,7 @@ mod tests {
             log!("[generate-srs] Roundtrip verification...");
             let t_read = Instant::now();
             let loaded_powers: Vec<G1Affine> = {
-                let mut reader = BufReader::new(
-                    File::open(&path).expect("reopen SRS file failed"),
-                );
+                let mut reader = BufReader::new(File::open(&path).expect("reopen SRS file failed"));
                 CanonicalDeserialize::deserialize_compressed(&mut reader)
                     .expect("deserialize g1_powers failed")
             };
@@ -852,7 +853,10 @@ mod tests {
 
             log!(
                 "=== SRS size={}: generate {:.2?}, write {:.2?}, roundtrip {:.2?} ===",
-                size, gen_time, write_time, read_time
+                size,
+                gen_time,
+                write_time,
+                read_time
             );
         }
     }
@@ -864,14 +868,11 @@ mod tests {
         use std::fs::File;
         use std::io::BufReader;
 
-        let mut reader = BufReader::new(
-            File::open(path).unwrap_or_else(|e| {
-                panic!("SRS file not found at {path}: {e}. Run test_generate_srs first.")
-            }),
-        );
-        let powers: Vec<G1Affine> =
-            CanonicalDeserialize::deserialize_compressed(&mut reader)
-                .expect("deserialize g1_powers failed");
+        let mut reader = BufReader::new(File::open(path).unwrap_or_else(|e| {
+            panic!("SRS file not found at {path}: {e}. Run test_generate_srs first.")
+        }));
+        let powers: Vec<G1Affine> = CanonicalDeserialize::deserialize_compressed(&mut reader)
+            .expect("deserialize g1_powers failed");
         HyperKZGProverKey {
             kzg_pk: Powers {
                 powers_of_g: std::borrow::Cow::Owned(powers),
@@ -910,10 +911,15 @@ mod tests {
             let max_len = polys.iter().map(|p| p.len()).max().unwrap();
             (polys, num_polys, max_len)
         };
+        let per_size = polys.iter().fold(HashMap::new(), |mut acc, p| {
+            *acc.entry(p.num_vars()).or_insert(0) += 1;
+            acc
+        });
         println!(
-            "[cpu-commit] Loaded {} polys in {:.2?}",
+            "[cpu-commit] Loaded {} polys in {:.2?} -> per sizes {:?}",
             num_polys,
-            t0.elapsed()
+            t0.elapsed(),
+            per_size,
         );
 
         let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
