@@ -467,7 +467,7 @@ impl GpuFusedHolder {
                 .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
             let wu = compute_work_units(device);
 
-            let fused = FusedPolyCommit::create(prog, wu)
+            let fused = FusedPolyCommit::create(prog, wu, device.memory())
                 .map_err(|e| anyhow::anyhow!("Failed to create FusedPolyCommit: {e}"))?;
 
             self.fused = Some(fused);
