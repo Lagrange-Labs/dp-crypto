@@ -237,11 +237,16 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 // GPU Batch Operations
 // ============================================================================
 
-/// Batch commit using GPU - single call for multiple polynomials.
+/// Threshold below which CPU MSM is faster than GPU (avoids kernel launch overhead).
+/// Matches `GPU_MSM_THRESHOLD` in ec-gpu-gen/src/gpu_buffer.rs.
+const GPU_MSM_THRESHOLD: usize = 4096;
+
+/// Batch commit using GPU - groups polynomials by size for optimal performance.
 ///
-/// Uses the sort-based MSM pipeline via `FusedPolyCommit::batch_commit`,
-/// which is significantly faster than the old per-thread bucket approach.
-/// Accepts bases in GPU Montgomery format directly, avoiding conversion overhead.
+/// Instead of zero-padding all polys to the max length (which wastes ~79x compute
+/// for mixed-size workloads), this groups polys by their actual size:
+/// - Tiny polys (≤ GPU_MSM_THRESHOLD): CPU MSM via rayon (avoids GPU kernel overhead)
+/// - GPU-sized polys: one `batch_commit` call per size group with correctly-sized bases
 pub fn gpu_batch_commit(
     bases_gpu: &[G1AffineM],
     polys: &[&DensePolynomial<Fr>],
@@ -251,18 +256,67 @@ pub fn gpu_batch_commit(
         return Ok(vec![]);
     }
 
-    let max_len = polys.iter().map(|p| p.len()).max().unwrap_or(0);
+    let mut results = vec![G1Projective::zero(); polys.len()];
 
-    // Pass original poly slices directly — batch_commit handles zero-padding
-    // internally per-poly, avoiding bulk allocation of all padded polys at once.
-    let poly_slices: Vec<&[Fr]> = polys.iter().map(|p| p.evals_ref()).collect();
+    // Group polys by length, preserving original indices for result placement
+    let mut by_size: std::collections::BTreeMap<usize, Vec<(usize, &[Fr])>> =
+        std::collections::BTreeMap::new();
+    for (i, p) in polys.iter().enumerate() {
+        by_size.entry(p.len()).or_default().push((i, p.evals_ref()));
+    }
+
+    let max_len = polys.iter().map(|p| p.len()).max().unwrap();
+    let has_tiny = by_size.keys().any(|&len| len <= GPU_MSM_THRESHOLD);
 
     let mut guard = GPU_FUSED.lock().unwrap();
+
+    // Cache CPU bases only if we have tiny polys that need CPU fallback
+    if has_tiny {
+        guard.ensure_cpu_bases_cached(bases_gpu);
+    }
+
+    // Upload bases for the largest group; persistent buffer covers all smaller groups
     guard.ensure_bases_uploaded_gpu(&bases_gpu[..max_len])?;
-    let fused = guard.fused.as_ref().unwrap();
-    fused
-        .batch_commit(&poly_slices, &bases_gpu[..max_len])
-        .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))
+
+    // All mutations done — take immutable references for the loop
+    let holder = &*guard;
+    let fused = holder.fused.as_ref().unwrap();
+    let cpu_bases = holder.cached_cpu_bases.as_ref().map(|(_, v)| v.as_slice());
+
+    for (&poly_len, group) in &by_size {
+        if poly_len <= GPU_MSM_THRESHOLD {
+            // CPU fallback: rayon parallel across polys
+            let bases = cpu_bases.unwrap();
+            let cpu_results: Vec<(usize, G1Projective)> = {
+                use rayon::prelude::*;
+                group
+                    .par_iter()
+                    .map(|(orig_idx, evals)| {
+                        let r = <G1Projective as VariableBaseMSM>::msm(
+                            &bases[..evals.len()],
+                            evals,
+                        )
+                        .expect("CPU MSM failed");
+                        (*orig_idx, r)
+                    })
+                    .collect()
+            };
+            for (idx, r) in cpu_results {
+                results[idx] = r;
+            }
+        } else {
+            // GPU: batch_commit with correctly-sized bases for this group
+            let slices: Vec<&[Fr]> = group.iter().map(|(_, e)| *e).collect();
+            let group_results = fused
+                .batch_commit(&slices, &bases_gpu[..poly_len])
+                .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))?;
+            for ((orig_idx, _), result) in group.iter().zip(group_results) {
+                results[*orig_idx] = result;
+            }
+        }
+    }
+
+    Ok(results)
 }
 
 /// GPU-accelerated fix_var operation.
@@ -1394,5 +1448,62 @@ mod tests {
             "Commits differ after serialization roundtrip"
         );
         println!("GPU prover key serialization roundtrip test passed");
+    }
+
+    /// Test that GPU batch_commit with mixed-size polynomials matches CPU.
+    ///
+    /// Creates polys of varying sizes (2^7 through 2^14) to exercise the
+    /// size-grouping logic: tiny polys use CPU MSM, larger ones use GPU.
+    #[test]
+    fn test_batch_commit_mixed_sizes() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(50);
+
+        // Mixed sizes: some below GPU_MSM_THRESHOLD (4096), some above
+        let sizes = [1 << 7, 1 << 10, 1 << 12, 1 << 14];
+        let max_size = *sizes.iter().max().unwrap();
+
+        let polys: Vec<DensePolynomial<Fr>> = sizes
+            .iter()
+            .flat_map(|&n| {
+                // Create 3 polys per size
+                (0..3).map(move |_| {
+                    let coeffs: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+                    DensePolynomial::new(coeffs)
+                })
+            })
+            .collect();
+
+        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_size);
+        let (cpu_pk, _) = srs.trim(max_size);
+        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+
+        let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
+
+        // CPU: commit each poly individually with correct base slice
+        let cpu_results = cpu_batch_commit(cpu_pk.g1_powers(), &poly_refs).expect("CPU failed");
+
+        // GPU: batch commit with mixed sizes (exercises grouping)
+        let gpu_results = gpu_batch_commit(gpu_pk.bases_gpu(), &poly_refs).expect("GPU failed");
+
+        assert_eq!(cpu_results.len(), gpu_results.len());
+        for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
+            assert_eq!(
+                cpu.into_affine(),
+                gpu.into_affine(),
+                "Commitment mismatch for poly {i} (size {})",
+                polys[i].len()
+            );
+        }
+
+        println!(
+            "Mixed-size batch commit test passed: {} polys, sizes {:?}",
+            polys.len(),
+            sizes
+        );
     }
 }

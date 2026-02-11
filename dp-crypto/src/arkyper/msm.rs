@@ -16,29 +16,7 @@ pub fn poly_msm<'a, A: AffineRepr>(
     Ok(r.remove(0))
 }
 
-#[cfg(not(any(feature = "cuda", feature = "opencl")))]
 pub fn batch_poly_msm<'a, A: AffineRepr>(
-    g1_powers: &[A],
-    polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
-) -> anyhow::Result<Vec<A::Group>> {
-    batch_poly_msm_cpu(g1_powers, polys)
-}
-
-#[cfg(any(feature = "cuda", feature = "opencl"))]
-pub fn batch_poly_msm<'a, A: AffineRepr>(
-    g1_powers: &[A],
-    polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
-) -> anyhow::Result<Vec<A::Group>> {
-    use std::any::TypeId;
-
-    if TypeId::of::<A>() == TypeId::of::<ark_bn254::G1Affine>() {
-        batch_poly_msm_gpu_bn254(g1_powers, polys)
-    } else {
-        batch_poly_msm_cpu(g1_powers, polys)
-    }
-}
-
-pub fn batch_poly_msm_cpu<'a, A: AffineRepr>(
     g1_powers: &[A],
     polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],
 ) -> anyhow::Result<Vec<A::Group>> {
