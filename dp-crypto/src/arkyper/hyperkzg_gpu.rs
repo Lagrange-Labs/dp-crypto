@@ -305,10 +305,10 @@ pub fn gpu_batch_commit(
                 results[idx] = r;
             }
         } else {
-            // GPU: concurrent multi-poly pipeline for same-size polys
+            // GPU: Pippenger MSM pipeline per poly
             let slices: Vec<&[Fr]> = group.iter().map(|(_, e)| *e).collect();
             let group_results = fused
-                .batch_commit_multi(&slices, &bases_gpu[..poly_len])
+                .batch_commit(&slices, &bases_gpu[..poly_len])
                 .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))?;
             for ((orig_idx, _), result) in group.iter().zip(group_results) {
                 results[*orig_idx] = result;
@@ -467,7 +467,7 @@ impl GpuFusedHolder {
                 .map_err(|e| anyhow::anyhow!("Failed to create GPU program: {e}"))?;
             let wu = compute_work_units(device);
 
-            let fused = FusedPolyCommit::create(prog, wu, device.memory())
+            let fused = FusedPolyCommit::create(prog, wu)
                 .map_err(|e| anyhow::anyhow!("Failed to create FusedPolyCommit: {e}"))?;
 
             self.fused = Some(fused);
@@ -1504,13 +1504,12 @@ mod tests {
         );
     }
 
-    /// Test that batch_commit_multi produces identical results to sequential batch_commit.
+    /// Test that GPU batch_commit (Pippenger) produces identical results to CPU MSM.
     ///
-    /// Commits 128 same-size polys via both the sequential pipeline (batch_commit, 1 poly at
-    /// a time) and the concurrent pipeline (batch_commit_multi, all polys in one kernel set),
-    /// and asserts they produce identical commitments.
+    /// Commits 128 same-size polys via GPU batch_commit and CPU MSM, asserting
+    /// they produce identical commitments.
     #[test]
-    fn test_batch_commit_multi_correctness() {
+    fn test_batch_commit_pippenger_correctness() {
         if Device::all().is_empty() {
             println!("No GPU available, skipping test");
             return;
@@ -1522,43 +1521,38 @@ mod tests {
         let n = 1 << ell;
         let num_polys = 128;
 
-        let polys: Vec<Vec<Fr>> = (0..num_polys)
-            .map(|_| (0..n).map(|_| Fr::rand(&mut rng)).collect())
+        let polys: Vec<DensePolynomial<Fr>> = (0..num_polys)
+            .map(|_| {
+                let coeffs: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+                DensePolynomial::new(coeffs)
+            })
             .collect();
 
         let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, n);
         let (cpu_pk, _) = srs.trim(n);
         let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
 
-        let bases_gpu = gpu_pk.bases_gpu();
+        let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
 
-        let mut guard = GPU_FUSED.lock().unwrap();
-        guard.ensure_bases_uploaded_gpu(&bases_gpu[..n]).unwrap();
-        let fused = guard.fused.as_ref().unwrap();
+        // CPU reference
+        let cpu_results = cpu_batch_commit(cpu_pk.g1_powers(), &poly_refs)
+            .expect("CPU batch_commit failed");
 
-        let slices: Vec<&[Fr]> = polys.iter().map(|p| p.as_slice()).collect();
+        // GPU Pippenger
+        let gpu_results = gpu_batch_commit(gpu_pk.bases_gpu(), &poly_refs)
+            .expect("GPU batch_commit failed");
 
-        // Sequential: existing batch_commit (one poly at a time)
-        let sequential_results = fused
-            .batch_commit(&slices, &bases_gpu[..n])
-            .expect("Sequential batch_commit failed");
-
-        // Concurrent: new batch_commit_multi (all polys in one kernel set)
-        let multi_results = fused
-            .batch_commit_multi(&slices, &bases_gpu[..n])
-            .expect("batch_commit_multi failed");
-
-        assert_eq!(sequential_results.len(), multi_results.len());
-        for (i, (seq, multi)) in sequential_results.iter().zip(multi_results.iter()).enumerate() {
+        assert_eq!(cpu_results.len(), gpu_results.len());
+        for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
             assert_eq!(
-                seq.into_affine(),
-                multi.into_affine(),
-                "Commitment mismatch at poly {i}: sequential vs multi"
+                cpu.into_affine(),
+                gpu.into_affine(),
+                "Commitment mismatch at poly {i}: CPU vs GPU"
             );
         }
 
         println!(
-            "batch_commit_multi correctness test passed: {} polys of size {}",
+            "batch_commit Pippenger correctness test passed: {} polys of size {}",
             num_polys, n
         );
     }
