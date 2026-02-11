@@ -441,8 +441,7 @@ impl GpuFusedHolder {
             .map_or(true, |(len, _)| *len != bases_gpu.len())
         {
             let _span =
-                tracing::debug_span!("convert_bases_from_gpu", n_bases = bases_gpu.len())
-                    .entered();
+                tracing::debug_span!("convert_bases_from_gpu", n_bases = bases_gpu.len()).entered();
             self.cached_cpu_bases = Some((bases_gpu.len(), convert_bases_from_gpu(bases_gpu)));
         }
     }
@@ -937,10 +936,8 @@ mod tests {
 
             let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
 
-            let cpu_results =
-                cpu_batch_commit(cpu_pk.g1_powers(), &poly_refs).expect("CPU failed");
-            let gpu_results =
-                gpu_batch_commit(gpu_pk.bases_gpu(), &poly_refs).expect("GPU failed");
+            let cpu_results = cpu_batch_commit(cpu_pk.g1_powers(), &poly_refs).expect("CPU failed");
+            let gpu_results = gpu_batch_commit(gpu_pk.bases_gpu(), &poly_refs).expect("GPU failed");
 
             assert_eq!(cpu_results.len(), gpu_results.len());
             for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
@@ -1127,14 +1124,11 @@ mod tests {
         use std::fs::File;
         use std::io::BufReader;
 
-        let mut reader = BufReader::new(
-            File::open(path).unwrap_or_else(|e| {
-                panic!("SRS file not found at {path}: {e}. Run test_generate_srs first.")
-            }),
-        );
-        let powers: Vec<G1Affine> =
-            CanonicalDeserialize::deserialize_compressed(&mut reader)
-                .expect("deserialize g1_powers failed");
+        let mut reader = BufReader::new(File::open(path).unwrap_or_else(|e| {
+            panic!("SRS file not found at {path}: {e}. Run test_generate_srs first.")
+        }));
+        let powers: Vec<G1Affine> = CanonicalDeserialize::deserialize_compressed(&mut reader)
+            .expect("deserialize g1_powers failed");
         let cpu_pk = HyperKZGProverKey {
             kzg_pk: ark_poly_commit::kzg10::Powers {
                 powers_of_g: std::borrow::Cow::Owned(powers),
@@ -1181,9 +1175,11 @@ mod tests {
             (polys, num_polys, max_len)
         };
         println!(
-            "[gpu-commit] Loaded {} polys in {:.2?}",
+            "[gpu-commit] Loaded {} polys in {:.2?} - max_len = {}, sizes = {:?}",
             num_polys,
-            t0.elapsed()
+            t0.elapsed(),
+            max_len,
+            polys.iter().map(|p| p.num_vars()).collect::<Vec<_>>()
         );
 
         let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
@@ -1194,8 +1190,8 @@ mod tests {
         println!("[gpu-commit] SRS loaded + converted: {:.2?}", load_time);
 
         let t_commit = Instant::now();
-        let _commits = HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys)
-            .expect("GPU batch_commit failed");
+        let _commits =
+            HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys).expect("GPU batch_commit failed");
         let commit_time = t_commit.elapsed();
 
         println!(
@@ -1244,9 +1240,8 @@ mod tests {
 
         let t_prove = Instant::now();
         let mut transcript = Blake3Transcript::new(b"ExportedTest");
-        let _proof =
-            HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut transcript)
-                .expect("GPU prove failed");
+        let _proof = HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut transcript)
+            .expect("GPU prove failed");
         let prove_time = t_prove.elapsed();
 
         println!(
@@ -1284,8 +1279,7 @@ mod tests {
         let cpu_commits = HyperKZG::<Bn254>::batch_commit(&cpu_pk, &polys).expect("CPU failed");
 
         // GPU batch commit
-        let gpu_commits =
-            HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys).expect("GPU failed");
+        let gpu_commits = HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys).expect("GPU failed");
 
         assert_eq!(cpu_commits.len(), gpu_commits.len());
         for (i, ((cpu_c, _), (gpu_c, _))) in cpu_commits.iter().zip(gpu_commits.iter()).enumerate()
