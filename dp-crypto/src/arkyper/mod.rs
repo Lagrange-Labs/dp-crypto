@@ -1005,7 +1005,7 @@ mod gpu_tests {
             let srs = HyperKZGSRS::setup(&mut rng, n);
             let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
 
-            let cpu_result = msm::batch_poly_msm_cpu::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap();
+            let cpu_result = msm::batch_poly_msm::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap();
             let gpu_result =
                 msm::batch_poly_msm_gpu_bn254::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap();
 
@@ -1033,7 +1033,7 @@ mod gpu_tests {
             let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
 
             let cpu_commit =
-                msm::batch_poly_msm_cpu::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap()[0];
+                msm::batch_poly_msm::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap()[0];
             let gpu_commit = HyperKZG::<Bn254>::commit(&pk, &poly).unwrap().0;
 
             assert_eq!(
@@ -1090,7 +1090,7 @@ mod gpu_tests {
 
         let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
 
-        let cpu_results = msm::batch_poly_msm_cpu::<G1Affine>(pk.g1_powers(), &poly_refs).unwrap();
+        let cpu_results = msm::batch_poly_msm::<G1Affine>(pk.g1_powers(), &poly_refs).unwrap();
         let gpu_results =
             msm::batch_poly_msm_gpu_bn254::<G1Affine>(pk.g1_powers(), &poly_refs).unwrap();
 

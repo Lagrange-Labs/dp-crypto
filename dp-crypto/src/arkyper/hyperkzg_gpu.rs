@@ -256,7 +256,7 @@ pub fn gpu_batch_commit(
         return Ok(vec![]);
     }
 
-    let mut results = vec![G1Projective::zero(); polys.len()];
+    let mut results = vec![G1Projective::ZERO; polys.len()];
 
     // Group polys by length, preserving original indices for result placement
     let mut by_size: std::collections::BTreeMap<usize, Vec<(usize, &[Fr])>> =
@@ -1467,16 +1467,13 @@ mod tests {
         let sizes = [1 << 7, 1 << 10, 1 << 12, 1 << 14];
         let max_size = *sizes.iter().max().unwrap();
 
-        let polys: Vec<DensePolynomial<Fr>> = sizes
-            .iter()
-            .flat_map(|&n| {
-                // Create 3 polys per size
-                (0..3).map(move |_| {
-                    let coeffs: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
-                    DensePolynomial::new(coeffs)
-                })
-            })
-            .collect();
+        let mut polys = Vec::new();
+        for &n in &sizes {
+            for _ in 0..3 {
+                let coeffs: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
+                polys.push(DensePolynomial::new(coeffs));
+            }
+        }
 
         let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_size);
         let (cpu_pk, _) = srs.trim(max_size);
