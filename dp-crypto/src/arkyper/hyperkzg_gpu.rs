@@ -256,6 +256,9 @@ fn gpu_msm_threshold() -> usize {
 /// - Tiny polys (≤ GPU_MSM_THRESHOLD): CPU MSM via rayon (avoids GPU kernel overhead)
 /// - GPU-sized polys: processed concurrently via `batch_commit_concurrent` with separate
 ///   CUDA streams per size group, enabling overlapping compute across groups
+///
+/// CPU and GPU work run in parallel via `std::thread::scope`: the GPU thread handles
+/// `batch_commit_concurrent` while the main thread runs rayon CPU MSMs concurrently.
 pub fn gpu_batch_commit(
     bases_gpu: &[G1AffineM],
     polys: &[&DensePolynomial<Fr>],
@@ -264,8 +267,6 @@ pub fn gpu_batch_commit(
     if polys.is_empty() {
         return Ok(vec![]);
     }
-
-    let mut results = vec![G1Projective::ZERO; polys.len()];
 
     // Group polys by next-power-of-2 bucket, preserving original indices for result placement.
     // This reduces 9 exact-size groups to ~4-5 buckets, cutting buffer allocations and
@@ -282,7 +283,8 @@ pub fn gpu_batch_commit(
     let has_gpu_polys = by_size.keys().any(|&len| len > threshold);
 
     // Print bucket distribution
-    let bucket_desc: Vec<String> = by_size.iter()
+    let bucket_desc: Vec<String> = by_size
+        .iter()
         .map(|(len, group)| {
             let tag = if *len <= threshold { "cpu" } else { "gpu" };
             format!("{}×{}({})", len, group.len(), tag)
@@ -290,69 +292,34 @@ pub fn gpu_batch_commit(
         .collect();
     eprintln!(
         "[gpu_batch_commit] {} polys, threshold={}, buckets: [{}]",
-        polys.len(), threshold, bucket_desc.join(", ")
+        polys.len(),
+        threshold,
+        bucket_desc.join(", ")
     );
 
-    let mut guard = GPU_FUSED.lock().unwrap();
-
-    // Cache CPU bases if we have polys that need CPU fallback
-    if has_cpu_polys {
-        guard.ensure_cpu_bases_cached(bases_gpu);
-    }
-
-    // Upload GPU bases for the largest GPU-bound group
-    if has_gpu_polys {
-        let gpu_max_len = by_size
+    // Targeted CPU base conversion: only convert bases needed by CPU polys (~4096 bases
+    // in ~1ms instead of all 8M bases in ~400ms via ensure_cpu_bases_cached).
+    let cpu_bases_local: Option<Vec<G1Affine>> = if has_cpu_polys {
+        let max_cpu_len = by_size
             .keys()
-            .filter(|&&len| len > threshold)
+            .filter(|&&len| len <= threshold)
             .max()
             .copied()
             .unwrap();
-        guard.ensure_bases_uploaded_gpu(&bases_gpu[..gpu_max_len])?;
-    }
-
-    guard.ensure_init()?;
-
-    let holder = &*guard;
-    let fused = holder.fused.as_ref().unwrap();
-    let cpu_bases = holder.cached_cpu_bases.as_ref().map(|(_, v)| v.as_slice());
-
-    // CPU fallback for tiny polys
-    let t_cpu = std::time::Instant::now();
-    let mut cpu_poly_count = 0usize;
-    for (&poly_len, group) in &by_size {
-        if poly_len > threshold {
-            continue;
-        }
-        cpu_poly_count += group.len();
-        let bases = cpu_bases.unwrap();
-        let cpu_results: Vec<(usize, G1Projective)> = {
-            use rayon::prelude::*;
-            group
-                .par_iter()
-                .map(|(orig_idx, evals)| {
-                    let r = <G1Projective as VariableBaseMSM>::msm(
-                        &bases[..evals.len()],
-                        evals,
-                    )
-                    .expect("CPU MSM failed");
-                    (*orig_idx, r)
-                })
-                .collect()
-        };
-        for (idx, r) in cpu_results {
-            results[idx] = r;
-        }
-    }
-    if cpu_poly_count > 0 {
+        let t_conv = std::time::Instant::now();
+        let bases = convert_bases_from_gpu(&bases_gpu[..max_cpu_len]);
         eprintln!(
-            "[gpu_batch_commit] CPU fallback: {} polys (threshold={}), {:.1}ms",
-            cpu_poly_count, threshold, t_cpu.elapsed().as_secs_f64() * 1000.0
+            "[gpu_batch_commit] targeted CPU base conversion: {} bases, {:.1}ms",
+            max_cpu_len,
+            t_conv.elapsed().as_secs_f64() * 1000.0
         );
-    }
+        Some(bases)
+    } else {
+        None
+    };
 
-    // Collect GPU groups, then split large groups across streams for load balancing.
-    // Without splitting, a 1200-poly group monopolizes one stream while others idle.
+    // Build GPU groups before entering parallel section.
+    // Split large groups across streams for load balancing.
     const MAX_STREAMS: usize = 4;
     let mut gpu_groups: Vec<(usize, Vec<&[Fr]>, Vec<usize>)> = Vec::new();
     for (&poly_len, group) in &by_size {
@@ -382,29 +349,97 @@ pub fn gpu_batch_commit(
     if !gpu_groups.is_empty() {
         // Sort by descending poly count so largest sub-groups get the first streams
         gpu_groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    }
 
-        let concurrent_groups: Vec<(Vec<&[Fr]>, usize)> = gpu_groups
-            .iter()
-            .map(|(poly_len, slices, _)| (slices.clone(), *poly_len))
-            .collect();
+    // Parallel CPU/GPU execution via std::thread::scope.
+    // GPU work runs on a dedicated OS thread while CPU MSMs run on main thread with rayon.
+    // The GPU thread holds the GPU_FUSED mutex; CPU MSMs use locally-converted bases.
+    let mut results = vec![G1Projective::ZERO; polys.len()];
 
-        let t_gpu = std::time::Instant::now();
-        let group_results = fused
-            .batch_commit_concurrent(concurrent_groups, bases_gpu)
-            .map_err(|e| anyhow::anyhow!("GPU batch_commit_concurrent error: {e}"))?;
-        eprintln!(
-            "[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
-            gpu_groups.len(),
-            t_gpu.elapsed().as_secs_f64() * 1000.0
-        );
+    std::thread::scope(|s| -> anyhow::Result<()> {
+        // Spawn GPU work on a dedicated thread
+        let gpu_handle = if !gpu_groups.is_empty() {
+            let gpu_max_len = gpu_groups
+                .iter()
+                .map(|(poly_len, _, _)| *poly_len)
+                .max()
+                .unwrap();
+            let concurrent_groups: Vec<(Vec<&[Fr]>, usize)> = gpu_groups
+                .iter()
+                .map(|(poly_len, slices, _)| (slices.clone(), *poly_len))
+                .collect();
+            let n_gpu_groups = gpu_groups.len();
 
-        // Map results back to original indices
-        for (group_idx, (_, _, orig_indices)) in gpu_groups.iter().enumerate() {
-            for (i, &orig_idx) in orig_indices.iter().enumerate() {
-                results[orig_idx] = group_results[group_idx][i];
+            Some(s.spawn(move || -> anyhow::Result<Vec<Vec<G1Projective>>> {
+                let t_gpu = std::time::Instant::now();
+                let mut guard = GPU_FUSED.lock().unwrap();
+                guard.ensure_bases_uploaded_gpu(&bases_gpu[..gpu_max_len])?;
+                guard.ensure_init()?;
+                let fused = guard.fused.as_ref().unwrap();
+                let group_results = fused
+                    .batch_commit_concurrent(concurrent_groups, bases_gpu)
+                    .map_err(|e| anyhow::anyhow!("GPU batch_commit_concurrent error: {e}"))?;
+                eprintln!(
+                    "[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
+                    n_gpu_groups,
+                    t_gpu.elapsed().as_secs_f64() * 1000.0
+                );
+                Ok(group_results)
+            }))
+        } else {
+            None
+        };
+
+        // CPU MSMs on main thread (rayon parallelism) — runs concurrently with GPU thread
+        if has_cpu_polys {
+            let t_cpu = std::time::Instant::now();
+            let bases = cpu_bases_local.as_ref().unwrap();
+            let mut cpu_poly_count = 0usize;
+            for (&poly_len, group) in &by_size {
+                if poly_len > threshold {
+                    continue;
+                }
+                cpu_poly_count += group.len();
+                let cpu_results: Vec<(usize, G1Projective)> = {
+                    use rayon::prelude::*;
+                    group
+                        .par_iter()
+                        .map(|(orig_idx, evals)| {
+                            let r = <G1Projective as VariableBaseMSM>::msm(
+                                &bases[..evals.len()],
+                                evals,
+                            )
+                            .expect("CPU MSM failed");
+                            (*orig_idx, r)
+                        })
+                        .collect()
+                };
+                for (idx, r) in cpu_results {
+                    results[idx] = r;
+                }
+            }
+            if cpu_poly_count > 0 {
+                eprintln!(
+                    "[gpu_batch_commit] CPU fallback: {} polys (threshold={}), {:.1}ms",
+                    cpu_poly_count,
+                    threshold,
+                    t_cpu.elapsed().as_secs_f64() * 1000.0
+                );
             }
         }
-    }
+
+        // Join GPU results
+        if let Some(handle) = gpu_handle {
+            let gpu_results = handle.join().unwrap()?;
+            for (group_idx, (_, _, orig_indices)) in gpu_groups.iter().enumerate() {
+                for (i, &orig_idx) in orig_indices.iter().enumerate() {
+                    results[orig_idx] = gpu_results[group_idx][i];
+                }
+            }
+        }
+
+        Ok(())
+    })?;
 
     Ok(results)
 }
