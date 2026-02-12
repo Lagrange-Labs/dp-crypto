@@ -237,9 +237,10 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 // GPU Batch Operations
 // ============================================================================
 
-/// Threshold below which CPU MSM is faster than GPU (avoids kernel launch overhead).
-/// Matches `GPU_MSM_THRESHOLD` in ec-gpu-gen/src/gpu_buffer.rs.
-const GPU_MSM_THRESHOLD: usize = 4096;
+/// Threshold below which CPU rayon MSM is faster than GPU Pippenger.
+/// GPU has ~2ms fixed overhead per poly (6 kernel creates + arg sets + CUDA API calls).
+/// CPU with 32+ rayon cores achieves higher throughput for small/medium polys.
+const GPU_MSM_THRESHOLD: usize = 1 << 18; // 262144
 
 /// Batch commit using GPU - groups polynomials by size for optimal performance.
 ///
@@ -266,21 +267,25 @@ pub fn gpu_batch_commit(
     }
 
     let max_len = polys.iter().map(|p| p.len()).max().unwrap();
-    let has_tiny = by_size.keys().any(|&len| len <= GPU_MSM_THRESHOLD);
+    let has_cpu_polys = by_size.keys().any(|&len| len <= GPU_MSM_THRESHOLD);
+    let has_gpu_polys = by_size.keys().any(|&len| len > GPU_MSM_THRESHOLD);
 
     let mut guard = GPU_FUSED.lock().unwrap();
 
-    // Cache CPU bases only if we have tiny polys that need CPU fallback
-    if has_tiny {
+    // Cache CPU bases only if we have polys that need CPU fallback
+    if has_cpu_polys {
         guard.ensure_cpu_bases_cached(bases_gpu);
     }
 
-    // Upload bases for the largest group; persistent buffer covers all smaller groups
-    guard.ensure_bases_uploaded_gpu(&bases_gpu[..max_len])?;
+    // Upload bases only if we have polys that need GPU
+    if has_gpu_polys {
+        let gpu_max_len = by_size.keys().filter(|&&len| len > GPU_MSM_THRESHOLD).max().copied().unwrap();
+        guard.ensure_bases_uploaded_gpu(&bases_gpu[..gpu_max_len])?;
+    }
 
     // All mutations done — take immutable references for the loop
     let holder = &*guard;
-    let fused = holder.fused.as_ref().unwrap();
+    let fused = if has_gpu_polys { Some(holder.fused.as_ref().unwrap()) } else { None };
     let cpu_bases = holder.cached_cpu_bases.as_ref().map(|(_, v)| v.as_slice());
 
     eprintln!("[gpu_batch_commit] {} size groups: {:?}",
@@ -288,6 +293,7 @@ pub fn gpu_batch_commit(
         by_size.iter().map(|(len, g)| (*len, g.len())).collect::<Vec<_>>());
 
     for (&poly_len, group) in &by_size {
+        let t_group = std::time::Instant::now();
         if poly_len <= GPU_MSM_THRESHOLD {
             // CPU fallback: rayon parallel across polys
             let bases = cpu_bases.unwrap();
@@ -308,15 +314,19 @@ pub fn gpu_batch_commit(
             for (idx, r) in cpu_results {
                 results[idx] = r;
             }
+            eprintln!("[gpu_batch_commit] CPU: {} polys @ {}, {:.1}ms",
+                group.len(), poly_len, t_group.elapsed().as_secs_f64() * 1000.0);
         } else {
             // GPU: Pippenger MSM pipeline per poly
             let slices: Vec<&[Fr]> = group.iter().map(|(_, e)| *e).collect();
-            let group_results = fused
+            let group_results = fused.unwrap()
                 .batch_commit(&slices, &bases_gpu[..poly_len])
                 .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))?;
             for ((orig_idx, _), result) in group.iter().zip(group_results) {
                 results[*orig_idx] = result;
             }
+            eprintln!("[gpu_batch_commit] GPU: {} polys @ {}, {:.1}ms",
+                group.len(), poly_len, t_group.elapsed().as_secs_f64() * 1000.0);
         }
     }
 
@@ -1467,7 +1477,7 @@ mod tests {
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(50);
 
-        // Mixed sizes: some below GPU_MSM_THRESHOLD (4096), some above
+        // Mixed sizes: some below GPU_MSM_THRESHOLD, some above
         let sizes = [1 << 7, 1 << 10, 1 << 12, 1 << 14];
         let max_size = *sizes.iter().max().unwrap();
 
