@@ -240,8 +240,14 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 /// Threshold below which CPU rayon MSM is faster than GPU Pippenger.
 /// GPU has ~2ms fixed overhead per poly (6 kernel creates + arg sets + CUDA API calls).
 /// CPU with 32+ rayon cores achieves higher throughput for small/medium polys.
+/// Override at runtime: `GPU_MSM_THRESHOLD=32768 cargo test ...`
 /// Run test_cpu_vs_gpu_threshold to find the optimal value for your hardware.
-const GPU_MSM_THRESHOLD: usize = 4096;
+fn gpu_msm_threshold() -> usize {
+    std::env::var("GPU_MSM_THRESHOLD")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(4096)
+}
 
 /// Batch commit using GPU - groups polynomials by size for optimal performance.
 ///
@@ -261,15 +267,31 @@ pub fn gpu_batch_commit(
 
     let mut results = vec![G1Projective::ZERO; polys.len()];
 
-    // Group polys by length, preserving original indices for result placement
+    // Group polys by next-power-of-2 bucket, preserving original indices for result placement.
+    // This reduces 9 exact-size groups to ~4-5 buckets, cutting buffer allocations and
+    // stream sharing overhead. Each poly is padded to the bucket size (at most 2x waste).
     let mut by_size: std::collections::BTreeMap<usize, Vec<(usize, &[Fr])>> =
         std::collections::BTreeMap::new();
     for (i, p) in polys.iter().enumerate() {
-        by_size.entry(p.len()).or_default().push((i, p.evals_ref()));
+        let bucket = p.len().next_power_of_two();
+        by_size.entry(bucket).or_default().push((i, p.evals_ref()));
     }
 
-    let has_cpu_polys = by_size.keys().any(|&len| len <= GPU_MSM_THRESHOLD);
-    let has_gpu_polys = by_size.keys().any(|&len| len > GPU_MSM_THRESHOLD);
+    let threshold = gpu_msm_threshold();
+    let has_cpu_polys = by_size.keys().any(|&len| len <= threshold);
+    let has_gpu_polys = by_size.keys().any(|&len| len > threshold);
+
+    // Print bucket distribution
+    let bucket_desc: Vec<String> = by_size.iter()
+        .map(|(len, group)| {
+            let tag = if *len <= threshold { "cpu" } else { "gpu" };
+            format!("{}×{}({})", len, group.len(), tag)
+        })
+        .collect();
+    eprintln!(
+        "[gpu_batch_commit] {} polys, threshold={}, buckets: [{}]",
+        polys.len(), threshold, bucket_desc.join(", ")
+    );
 
     let mut guard = GPU_FUSED.lock().unwrap();
 
@@ -282,7 +304,7 @@ pub fn gpu_batch_commit(
     if has_gpu_polys {
         let gpu_max_len = by_size
             .keys()
-            .filter(|&&len| len > GPU_MSM_THRESHOLD)
+            .filter(|&&len| len > threshold)
             .max()
             .copied()
             .unwrap();
@@ -296,10 +318,13 @@ pub fn gpu_batch_commit(
     let cpu_bases = holder.cached_cpu_bases.as_ref().map(|(_, v)| v.as_slice());
 
     // CPU fallback for tiny polys
+    let t_cpu = std::time::Instant::now();
+    let mut cpu_poly_count = 0usize;
     for (&poly_len, group) in &by_size {
-        if poly_len > GPU_MSM_THRESHOLD {
+        if poly_len > threshold {
             continue;
         }
+        cpu_poly_count += group.len();
         let bases = cpu_bases.unwrap();
         let cpu_results: Vec<(usize, G1Projective)> = {
             use rayon::prelude::*;
@@ -319,13 +344,19 @@ pub fn gpu_batch_commit(
             results[idx] = r;
         }
     }
+    if cpu_poly_count > 0 {
+        eprintln!(
+            "[gpu_batch_commit] CPU fallback: {} polys (threshold={}), {:.1}ms",
+            cpu_poly_count, threshold, t_cpu.elapsed().as_secs_f64() * 1000.0
+        );
+    }
 
     // Collect GPU groups for concurrent processing
     // Each group: (poly_slices, max_len) — sorted by descending poly count
     // so the largest group gets stream 0 (dominates wall time)
     let mut gpu_groups: Vec<(usize, Vec<&[Fr]>, Vec<usize>)> = Vec::new();
     for (&poly_len, group) in &by_size {
-        if poly_len <= GPU_MSM_THRESHOLD {
+        if poly_len <= threshold {
             continue;
         }
         let slices: Vec<&[Fr]> = group.iter().map(|(_, e)| *e).collect();
