@@ -351,9 +351,9 @@ pub fn gpu_batch_commit(
         );
     }
 
-    // Collect GPU groups for concurrent processing
-    // Each group: (poly_slices, max_len) — sorted by descending poly count
-    // so the largest group gets stream 0 (dominates wall time)
+    // Collect GPU groups, then split large groups across streams for load balancing.
+    // Without splitting, a 1200-poly group monopolizes one stream while others idle.
+    const MAX_STREAMS: usize = 4;
     let mut gpu_groups: Vec<(usize, Vec<&[Fr]>, Vec<usize>)> = Vec::new();
     for (&poly_len, group) in &by_size {
         if poly_len <= threshold {
@@ -361,11 +361,26 @@ pub fn gpu_batch_commit(
         }
         let slices: Vec<&[Fr]> = group.iter().map(|(_, e)| *e).collect();
         let orig_indices: Vec<usize> = group.iter().map(|(idx, _)| *idx).collect();
-        gpu_groups.push((poly_len, slices, orig_indices));
+
+        // Split large groups into MAX_STREAMS chunks so round-robin stream assignment
+        // distributes their polys evenly across all streams
+        if slices.len() > MAX_STREAMS {
+            let chunk_size = (slices.len() + MAX_STREAMS - 1) / MAX_STREAMS;
+            for start in (0..slices.len()).step_by(chunk_size) {
+                let end = std::cmp::min(start + chunk_size, slices.len());
+                gpu_groups.push((
+                    poly_len,
+                    slices[start..end].to_vec(),
+                    orig_indices[start..end].to_vec(),
+                ));
+            }
+        } else {
+            gpu_groups.push((poly_len, slices, orig_indices));
+        }
     }
 
     if !gpu_groups.is_empty() {
-        // Sort by descending poly count so largest group gets stream 0
+        // Sort by descending poly count so largest sub-groups get the first streams
         gpu_groups.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
 
         let concurrent_groups: Vec<(Vec<&[Fr]>, usize)> = gpu_groups
