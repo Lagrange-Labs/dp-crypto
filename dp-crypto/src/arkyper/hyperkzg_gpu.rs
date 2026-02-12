@@ -240,7 +240,8 @@ pub static GPU_POLY_OPS: std::sync::LazyLock<std::sync::Mutex<GpuPolyOpsHolder>>
 /// Threshold below which CPU rayon MSM is faster than GPU Pippenger.
 /// GPU has ~2ms fixed overhead per poly (6 kernel creates + arg sets + CUDA API calls).
 /// CPU with 32+ rayon cores achieves higher throughput for small/medium polys.
-const GPU_MSM_THRESHOLD: usize = 1 << 18; // 262144
+/// Run test_cpu_vs_gpu_threshold to find the optimal value for your hardware.
+const GPU_MSM_THRESHOLD: usize = 4096;
 
 /// Batch commit using GPU - groups polynomials by size for optimal performance.
 ///
@@ -272,20 +273,23 @@ pub fn gpu_batch_commit(
 
     let mut guard = GPU_FUSED.lock().unwrap();
 
-    // Cache CPU bases only if we have polys that need CPU fallback
+    // Cache CPU bases if we have polys that need CPU fallback
     if has_cpu_polys {
         guard.ensure_cpu_bases_cached(bases_gpu);
     }
 
-    // Upload bases only if we have polys that need GPU
+    // Upload GPU bases for the largest GPU-bound group
     if has_gpu_polys {
         let gpu_max_len = by_size.keys().filter(|&&len| len > GPU_MSM_THRESHOLD).max().copied().unwrap();
         guard.ensure_bases_uploaded_gpu(&bases_gpu[..gpu_max_len])?;
     }
 
+    // Ensure GPU is initialized (needed for fused reference below)
+    guard.ensure_init()?;
+
     // All mutations done — take immutable references for the loop
     let holder = &*guard;
-    let fused = if has_gpu_polys { Some(holder.fused.as_ref().unwrap()) } else { None };
+    let fused = holder.fused.as_ref().unwrap();
     let cpu_bases = holder.cached_cpu_bases.as_ref().map(|(_, v)| v.as_slice());
 
     eprintln!("[gpu_batch_commit] {} size groups: {:?}",
@@ -319,7 +323,7 @@ pub fn gpu_batch_commit(
         } else {
             // GPU: Pippenger MSM pipeline per poly
             let slices: Vec<&[Fr]> = group.iter().map(|(_, e)| *e).collect();
-            let group_results = fused.unwrap()
+            let group_results = fused
                 .batch_commit(&slices, &bases_gpu[..poly_len])
                 .map_err(|e| anyhow::anyhow!("GPU batch commit error: {e}"))?;
             for ((orig_idx, _), result) in group.iter().zip(group_results) {
@@ -1569,5 +1573,105 @@ mod tests {
             "batch_commit Pippenger correctness test passed: {} polys of size {}",
             num_polys, n
         );
+    }
+
+    /// Benchmark CPU rayon MSM vs GPU Pippenger at various poly sizes.
+    ///
+    /// For each size, commits a batch of polys via both paths and prints timing.
+    /// Use this to find the optimal GPU_MSM_THRESHOLD.
+    ///
+    /// Run with: cargo test --release --features cuda test_cpu_vs_gpu_threshold -- --nocapture
+    #[test]
+    fn test_cpu_vs_gpu_threshold() {
+        if Device::all().is_empty() {
+            println!("No GPU available, skipping test");
+            return;
+        }
+
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(99);
+
+        // Test sizes from 2^10 to 2^22, with realistic batch counts
+        let configs: Vec<(usize, usize)> = vec![
+            (1 << 10, 200),  // 1K elements, 200 polys
+            (1 << 12, 200),  // 4K
+            (1 << 14, 200),  // 16K
+            (1 << 15, 100),  // 32K
+            (1 << 16, 100),  // 64K
+            (1 << 17, 50),   // 128K
+            (1 << 18, 50),   // 256K
+            (1 << 19, 20),   // 512K
+            (1 << 20, 10),   // 1M
+            (1 << 21, 4),    // 2M
+            (1 << 22, 2),    // 4M
+        ];
+
+        let max_size = configs.iter().map(|(s, _)| *s).max().unwrap();
+
+        // Generate SRS once at max size
+        eprintln!("[threshold] Generating SRS at size {}...", max_size);
+        let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, max_size);
+        let (cpu_pk, _) = srs.trim(max_size);
+        let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+        eprintln!("[threshold] SRS ready.");
+
+        // Initialize GPU + upload bases
+        {
+            let mut guard = GPU_FUSED.lock().unwrap();
+            guard.ensure_bases_uploaded_gpu(&gpu_pk.bases_gpu()[..max_size]).unwrap();
+            guard.ensure_cpu_bases_cached(gpu_pk.bases_gpu());
+        }
+
+        eprintln!();
+        eprintln!("{:<12} {:>6} {:>10} {:>10} {:>8}", "poly_size", "polys", "cpu_ms", "gpu_ms", "winner");
+        eprintln!("{}", "-".repeat(52));
+
+        for (poly_size, num_polys) in &configs {
+            let polys: Vec<DensePolynomial<Fr>> = (0..*num_polys)
+                .map(|_| {
+                    let coeffs: Vec<Fr> = (0..*poly_size).map(|_| Fr::rand(&mut rng)).collect();
+                    DensePolynomial::new(coeffs)
+                })
+                .collect();
+
+            let slices: Vec<&[Fr]> = polys.iter().map(|p| p.evals_ref()).collect();
+
+            // CPU rayon MSM
+            let cpu_bases = {
+                let guard = GPU_FUSED.lock().unwrap();
+                guard.cached_cpu_bases.as_ref().unwrap().1.clone()
+            };
+            let t_cpu = std::time::Instant::now();
+            {
+                use rayon::prelude::*;
+                let _cpu_results: Vec<G1Projective> = slices
+                    .par_iter()
+                    .map(|evals| {
+                        <G1Projective as VariableBaseMSM>::msm(
+                            &cpu_bases[..evals.len()],
+                            evals,
+                        )
+                        .expect("CPU MSM failed")
+                    })
+                    .collect();
+            }
+            let cpu_ms = t_cpu.elapsed().as_secs_f64() * 1000.0;
+
+            // GPU Pippenger (call fused.batch_commit directly, bypassing threshold)
+            let guard = GPU_FUSED.lock().unwrap();
+            let fused = guard.fused.as_ref().unwrap();
+            let t_gpu = std::time::Instant::now();
+            let _gpu_results = fused
+                .batch_commit(&slices, &gpu_pk.bases_gpu()[..*poly_size])
+                .expect("GPU batch_commit failed");
+            let gpu_ms = t_gpu.elapsed().as_secs_f64() * 1000.0;
+            drop(guard);
+
+            let winner = if cpu_ms < gpu_ms { "CPU" } else { "GPU" };
+            eprintln!("{:<12} {:>6} {:>10.1} {:>10.1} {:>8}",
+                poly_size, num_polys, cpu_ms, gpu_ms, winner);
+        }
+
+        eprintln!();
+        eprintln!("[threshold] Done. Set GPU_MSM_THRESHOLD to the smallest size where GPU wins.");
     }
 }
