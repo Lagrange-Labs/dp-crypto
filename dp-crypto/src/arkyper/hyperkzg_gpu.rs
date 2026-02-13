@@ -108,6 +108,14 @@ impl HyperKZGGpuSRS {
             bases_gpu: self.powers_of_g_gpu,
         };
 
+        // Eagerly upload to GPU
+        let mut guard = GPU_FUSED.lock().unwrap();
+        guard.ensure_init().expect("GPU init failed");
+        guard
+            .ensure_bases_uploaded_gpu(&pk.bases_gpu)
+            .expect("GPU upload failed");
+        drop(guard);
+
         let vk = HyperKZGVerifierKey {
             kzg_vk: ark_poly_commit::kzg10::VerifierKey {
                 g: self.g,
@@ -154,45 +162,51 @@ impl HyperKZGGpuProverKey {
     }
 
     /// Convert a CPU-format prover key to GPU-native format.
+    ///
+    /// Eagerly initializes the GPU and uploads bases so that holding a prover key
+    /// means the SRS is already resident on GPU memory.
     pub fn from_cpu(pk: &HyperKZGProverKey<Bn254>) -> Self {
-        Self {
-            bases_gpu: convert_bases_to_gpu(pk.g1_powers()),
-        }
+        let bases_gpu = convert_bases_to_gpu(pk.g1_powers());
+        // Eagerly upload to GPU so holding a prover key = SRS already on GPU
+        let mut guard = GPU_FUSED.lock().unwrap();
+        guard.ensure_init().expect("GPU init failed");
+        guard
+            .ensure_bases_uploaded_gpu(&bases_gpu)
+            .expect("GPU upload failed");
+        drop(guard);
+        Self { bases_gpu }
     }
 }
 
 impl Serialize for HyperKZGGpuProverKey {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let n = self.bases_gpu.len();
-        let mut data = vec![0u8; n * 64];
-        for (i, m) in self.bases_gpu.iter().enumerate() {
-            data[i * 64..i * 64 + 32].copy_from_slice(&m.x);
-            data[i * 64 + 32..(i + 1) * 64].copy_from_slice(&m.y);
-        }
-        (n, data).serialize(serializer)
+        use ark_serialize::CanonicalSerialize;
+        // Convert GPU → CPU format, then serialize via arkworks canonical encoding
+        let cpu_bases: Vec<G1Affine> = convert_bases_from_gpu(&self.bases_gpu);
+        let mut bytes = Vec::new();
+        cpu_bases
+            .serialize_compressed(&mut bytes)
+            .map_err(serde::ser::Error::custom)?;
+        bytes.serialize(serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for HyperKZGGpuProverKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let (n, data): (usize, Vec<u8>) = Deserialize::deserialize(deserializer)?;
-        if data.len() != n * 64 {
-            return Err(serde::de::Error::custom(format!(
-                "invalid data length: expected {} bytes for {} bases, got {}",
-                n * 64,
-                n,
-                data.len()
-            )));
-        }
-        let mut bases_gpu = Vec::with_capacity(n);
-        for i in 0..n {
-            let mut x = [0u8; 32];
-            let mut y = [0u8; 32];
-            x.copy_from_slice(&data[i * 64..i * 64 + 32]);
-            y.copy_from_slice(&data[i * 64 + 32..(i + 1) * 64]);
-            bases_gpu.push(G1AffineM { x, y });
-        }
-        Ok(HyperKZGGpuProverKey { bases_gpu })
+        use ark_serialize::CanonicalDeserialize;
+        let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
+        let cpu_bases: Vec<G1Affine> =
+            CanonicalDeserialize::deserialize_compressed(&bytes[..])
+                .map_err(serde::de::Error::custom)?;
+        let bases_gpu = convert_bases_to_gpu(&cpu_bases);
+        // Eagerly upload to GPU
+        let mut guard = GPU_FUSED.lock().unwrap();
+        guard.ensure_init().map_err(serde::de::Error::custom)?;
+        guard
+            .ensure_bases_uploaded_gpu(&bases_gpu)
+            .map_err(serde::de::Error::custom)?;
+        drop(guard);
+        Ok(Self { bases_gpu })
     }
 }
 
@@ -263,6 +277,7 @@ pub fn gpu_batch_commit(
     bases_gpu: &[G1AffineM],
     polys: &[&DensePolynomial<Fr>],
 ) -> anyhow::Result<Vec<G1Projective>> {
+    let overall_start = std::time::Instant::now();
     let _span = tracing::debug_span!("gpu_batch_commit", n_polys = polys.len()).entered();
     if polys.is_empty() {
         return Ok(vec![]);
@@ -373,9 +388,9 @@ pub fn gpu_batch_commit(
             Some(s.spawn(move || -> anyhow::Result<Vec<Vec<G1Projective>>> {
                 let t_gpu = std::time::Instant::now();
                 let mut guard = GPU_FUSED.lock().unwrap();
-                guard.ensure_bases_uploaded_gpu(&bases_gpu[..gpu_max_len])?;
-                guard.ensure_init()?;
-                let fused = guard.fused.as_ref().unwrap();
+                let fused = guard.fused.as_mut().expect(
+                    "GPU not initialized — HyperKZGGpuProverKey must be created before gpu_batch_commit",
+                );
                 let group_results = fused
                     .batch_commit_concurrent(concurrent_groups, bases_gpu)
                     .map_err(|e| anyhow::anyhow!("GPU batch_commit_concurrent error: {e}"))?;
@@ -441,6 +456,11 @@ pub fn gpu_batch_commit(
         Ok(())
     })?;
 
+    eprintln!(
+        "[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
+        overall_start.elapsed().as_secs_f64() * 1000.0,
+        polys.len()
+    );
     Ok(results)
 }
 
