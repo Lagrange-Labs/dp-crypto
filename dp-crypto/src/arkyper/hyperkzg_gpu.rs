@@ -387,8 +387,8 @@ pub fn gpu_batch_commit(
 
             Some(s.spawn(move || -> anyhow::Result<Vec<Vec<G1Projective>>> {
                 let t_gpu = std::time::Instant::now();
-                let mut guard = GPU_FUSED.lock().unwrap();
-                let fused = guard.fused.as_mut().expect(
+                let guard = GPU_FUSED.lock().unwrap();
+                let fused = guard.fused.as_ref().expect(
                     "GPU not initialized — HyperKZGGpuProverKey must be created before gpu_batch_commit",
                 );
                 let group_results = fused
