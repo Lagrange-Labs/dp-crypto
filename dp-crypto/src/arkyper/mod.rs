@@ -25,11 +25,11 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(feature = "cuda")]
 pub mod gpu_msm;
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(feature = "cuda")]
 pub mod hyperkzg_gpu;
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(feature = "cuda")]
 pub use hyperkzg_gpu::{HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGGpuSRS, gpu_setup};
 pub mod interface;
 pub mod msm;
@@ -985,7 +985,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, any(feature = "cuda", feature = "opencl")))]
+#[cfg(all(test, feature = "cuda"))]
 mod gpu_tests {
     use super::*;
     use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};

@@ -34,7 +34,7 @@ pub fn batch_poly_msm<'a, A: AffineRepr>(
     Ok(r)
 }
 
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(feature = "cuda")]
 pub fn batch_poly_msm_gpu_bn254<'a, A: AffineRepr>(
     g1_powers: &[A],
     polys: &[impl Borrow<DensePolynomial<'a, A::ScalarField>>],

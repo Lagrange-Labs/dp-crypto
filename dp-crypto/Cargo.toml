@@ -59,7 +59,6 @@ all-stable = ["mono", "parallel"]
 asm = ["ark-ff/asm"]
 mono = []
 cuda = ["dep:ec-gpu", "dep:ec-gpu-gen", "ec-gpu-gen/cuda"]
-opencl = ["dep:ec-gpu", "dep:ec-gpu-gen", "ec-gpu-gen/opencl"]
 
 [dev-dependencies]
 criterion = { version = "0.7.0", features = ["html_reports"]}

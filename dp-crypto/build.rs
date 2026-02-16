@@ -1,4 +1,4 @@
-#[cfg(any(feature = "cuda", feature = "opencl"))]
+#[cfg(feature = "cuda")]
 fn main() {
     use ark_bn254::{Fq, Fr};
     use ec_gpu::arkworks_bn254::G1Affine;
@@ -10,5 +10,5 @@ fn main() {
     ec_gpu_gen::generate(&source);
 }
 
-#[cfg(not(any(feature = "cuda", feature = "opencl")))]
+#[cfg(not(feature = "cuda"))]
 fn main() {}

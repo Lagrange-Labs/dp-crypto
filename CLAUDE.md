@@ -37,7 +37,7 @@ cargo run --example hyperkzg_gpu --features cuda
 - `default = ["mono"]` - No parallelization
 - `parallel` - Enables rayon parallelization and ASM optimizations
 - `all-stable` - Combines mono + parallel (use for tests/CI)
-- `cuda` / `opencl` - GPU acceleration via ec-gpu
+- `cuda` - GPU acceleration via ec-gpu (CUDA only)
 - `nightly-benches` - Enables comparison benchmarks against other implementations
 
 ## Workspace Structure
