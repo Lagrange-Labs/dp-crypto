@@ -723,6 +723,7 @@ mod tests {
     /// generates a CPU SRS for each unique size, and saves to `/tmp/pcs_srs_{size}.bin`.
     /// Run this once before the measurement tests.
     #[test]
+    #[ignore = "only generate when running test_gpu/cpu_from_exported_data"]
     fn test_generate_srs() {
         use ark_bn254::G1Affine;
         use std::collections::BTreeSet;
@@ -884,6 +885,7 @@ mod tests {
     /// CPU batch_commit measurement from exported data.
     /// Loads pre-generated SRS from disk (run test_generate_srs first).
     #[test]
+    #[ignore = "only manual testing - requires generate_srs first"]
     fn test_cpu_commit_from_exported_data() {
         use std::fs::File;
         use std::io::BufReader;
@@ -1032,8 +1034,7 @@ mod gpu_tests {
             let srs = HyperKZGSRS::setup(&mut rng, n);
             let (pk, _): (HyperKZGProverKey<Bn254>, HyperKZGVerifierKey<Bn254>) = srs.trim(n);
 
-            let cpu_commit =
-                msm::batch_poly_msm::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap()[0];
+            let cpu_commit = msm::batch_poly_msm::<G1Affine>(pk.g1_powers(), &[&poly]).unwrap()[0];
             let gpu_commit = HyperKZG::<Bn254>::commit(&pk, &poly).unwrap().0;
 
             assert_eq!(

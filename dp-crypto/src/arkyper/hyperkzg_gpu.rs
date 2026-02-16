@@ -195,9 +195,8 @@ impl<'de> Deserialize<'de> for HyperKZGGpuProverKey {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use ark_serialize::CanonicalDeserialize;
         let bytes: Vec<u8> = Vec::deserialize(deserializer)?;
-        let cpu_bases: Vec<G1Affine> =
-            CanonicalDeserialize::deserialize_compressed(&bytes[..])
-                .map_err(serde::de::Error::custom)?;
+        let cpu_bases: Vec<G1Affine> = CanonicalDeserialize::deserialize_compressed(&bytes[..])
+            .map_err(serde::de::Error::custom)?;
         let bases_gpu = convert_bases_to_gpu(&cpu_bases);
         // Eagerly upload to GPU
         let mut guard = GPU_FUSED.lock().unwrap();
@@ -1340,6 +1339,7 @@ mod tests {
     /// GPU batch_commit measurement from exported data.
     /// Loads pre-generated SRS from disk and converts to GPU format.
     #[test]
+    #[ignore = "only manual testing - requires generate_srs first"]
     fn test_gpu_commit_from_exported_data() {
         use crate::arkyper::PcsCommitExport;
         use std::fs::File;
@@ -1402,6 +1402,7 @@ mod tests {
     /// GPU prove measurement from exported data.
     /// Loads pre-generated SRS from disk and converts to GPU format.
     #[test]
+    #[ignore = "only manual testing - requires generate_srs first"]
     fn test_gpu_open_from_exported_data() {
         use crate::arkyper::PcsOpenExport;
         use std::fs::File;
@@ -1680,12 +1681,12 @@ mod tests {
         let poly_refs: Vec<&DensePolynomial<Fr>> = polys.iter().collect();
 
         // CPU reference
-        let cpu_results = cpu_batch_commit(cpu_pk.g1_powers(), &poly_refs)
-            .expect("CPU batch_commit failed");
+        let cpu_results =
+            cpu_batch_commit(cpu_pk.g1_powers(), &poly_refs).expect("CPU batch_commit failed");
 
         // GPU Pippenger
-        let gpu_results = gpu_batch_commit(gpu_pk.bases_gpu(), &poly_refs)
-            .expect("GPU batch_commit failed");
+        let gpu_results =
+            gpu_batch_commit(gpu_pk.bases_gpu(), &poly_refs).expect("GPU batch_commit failed");
 
         assert_eq!(cpu_results.len(), gpu_results.len());
         for (i, (cpu, gpu)) in cpu_results.iter().zip(gpu_results.iter()).enumerate() {
@@ -1719,17 +1720,17 @@ mod tests {
 
         // Test sizes from 2^10 to 2^22, with realistic batch counts
         let configs: Vec<(usize, usize)> = vec![
-            (1 << 10, 200),  // 1K elements, 200 polys
-            (1 << 12, 200),  // 4K
-            (1 << 14, 200),  // 16K
-            (1 << 15, 100),  // 32K
-            (1 << 16, 100),  // 64K
-            (1 << 17, 50),   // 128K
-            (1 << 18, 50),   // 256K
-            (1 << 19, 20),   // 512K
-            (1 << 20, 10),   // 1M
-            (1 << 21, 4),    // 2M
-            (1 << 22, 2),    // 4M
+            (1 << 10, 200), // 1K elements, 200 polys
+            (1 << 12, 200), // 4K
+            (1 << 14, 200), // 16K
+            (1 << 15, 100), // 32K
+            (1 << 16, 100), // 64K
+            (1 << 17, 50),  // 128K
+            (1 << 18, 50),  // 256K
+            (1 << 19, 20),  // 512K
+            (1 << 20, 10),  // 1M
+            (1 << 21, 4),   // 2M
+            (1 << 22, 2),   // 4M
         ];
 
         let max_size = configs.iter().map(|(s, _)| *s).max().unwrap();
@@ -1744,12 +1745,17 @@ mod tests {
         // Initialize GPU + upload bases
         {
             let mut guard = GPU_FUSED.lock().unwrap();
-            guard.ensure_bases_uploaded_gpu(&gpu_pk.bases_gpu()[..max_size]).unwrap();
+            guard
+                .ensure_bases_uploaded_gpu(&gpu_pk.bases_gpu()[..max_size])
+                .unwrap();
             guard.ensure_cpu_bases_cached(gpu_pk.bases_gpu());
         }
 
         eprintln!();
-        eprintln!("{:<12} {:>6} {:>10} {:>10} {:>8}", "poly_size", "polys", "cpu_ms", "gpu_ms", "winner");
+        eprintln!(
+            "{:<12} {:>6} {:>10} {:>10} {:>8}",
+            "poly_size", "polys", "cpu_ms", "gpu_ms", "winner"
+        );
         eprintln!("{}", "-".repeat(52));
 
         for (poly_size, num_polys) in &configs {
@@ -1773,11 +1779,8 @@ mod tests {
                 let _cpu_results: Vec<G1Projective> = slices
                     .par_iter()
                     .map(|evals| {
-                        <G1Projective as VariableBaseMSM>::msm(
-                            &cpu_bases[..evals.len()],
-                            evals,
-                        )
-                        .expect("CPU MSM failed")
+                        <G1Projective as VariableBaseMSM>::msm(&cpu_bases[..evals.len()], evals)
+                            .expect("CPU MSM failed")
                     })
                     .collect();
             }
@@ -1794,8 +1797,10 @@ mod tests {
             drop(guard);
 
             let winner = if cpu_ms < gpu_ms { "CPU" } else { "GPU" };
-            eprintln!("{:<12} {:>6} {:>10.1} {:>10.1} {:>8}",
-                poly_size, num_polys, cpu_ms, gpu_ms, winner);
+            eprintln!(
+                "{:<12} {:>6} {:>10.1} {:>10.1} {:>8}",
+                poly_size, num_polys, cpu_ms, gpu_ms, winner
+            );
         }
 
         eprintln!();
