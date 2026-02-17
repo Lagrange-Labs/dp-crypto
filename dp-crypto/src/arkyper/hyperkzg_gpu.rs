@@ -384,22 +384,27 @@ pub fn gpu_batch_commit(
                 .collect();
             let n_gpu_groups = gpu_groups.len();
 
-            Some(s.spawn(move || -> anyhow::Result<Vec<Vec<G1Projective>>> {
-                let t_gpu = std::time::Instant::now();
-                let guard = GPU_FUSED.lock().unwrap();
-                let fused = guard.fused.as_ref().expect(
-                    "GPU not initialized — HyperKZGGpuProverKey must be created before gpu_batch_commit",
-                );
-                let group_results = fused
-                    .batch_commit_concurrent(concurrent_groups, bases_gpu)
-                    .map_err(|e| anyhow::anyhow!("GPU batch_commit_concurrent error: {e}"))?;
-                eprintln!(
-                    "[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
-                    n_gpu_groups,
-                    t_gpu.elapsed().as_secs_f64() * 1000.0
-                );
-                Ok(group_results)
-            }))
+            Some(
+                std::thread::Builder::new()
+                    .stack_size(8 * 1024 * 1024) // 8MB: debug-mode GPU closures exceed the 2MB default
+                    .spawn_scoped(s, move || -> anyhow::Result<Vec<Vec<G1Projective>>> {
+                        let t_gpu = std::time::Instant::now();
+                        let guard = GPU_FUSED.lock().unwrap();
+                        let fused = guard.fused.as_ref().expect(
+                            "GPU not initialized — HyperKZGGpuProverKey must be created before gpu_batch_commit",
+                        );
+                        let group_results = fused
+                            .batch_commit_concurrent(concurrent_groups, bases_gpu)
+                            .map_err(|e| anyhow::anyhow!("GPU batch_commit_concurrent error: {e}"))?;
+                        eprintln!(
+                            "[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
+                            n_gpu_groups,
+                            t_gpu.elapsed().as_secs_f64() * 1000.0
+                        );
+                        Ok(group_results)
+                    })
+                    .expect("failed to spawn GPU thread"),
+            )
         } else {
             None
         };
@@ -1708,8 +1713,9 @@ mod tests {
     /// For each size, commits a batch of polys via both paths and prints timing.
     /// Use this to find the optimal GPU_MSM_THRESHOLD.
     ///
-    /// Run with: cargo test --release --features cuda test_cpu_vs_gpu_threshold -- --nocapture
+    /// Run with: cargo test --release --features cuda test_cpu_vs_gpu_threshold -- --nocapture --ignored
     #[test]
+    #[ignore = "benchmark test — run manually with --release"]
     fn test_cpu_vs_gpu_threshold() {
         if Device::all().is_empty() {
             println!("No GPU available, skipping test");
