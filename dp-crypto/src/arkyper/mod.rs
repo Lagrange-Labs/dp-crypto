@@ -945,6 +945,7 @@ mod tests {
     /// CPU prove measurement from exported data.
     /// Loads pre-generated SRS from disk (run test_generate_srs first).
     #[test]
+    #[ignore = "only manual testing - requires generate_srs first"]
     fn test_cpu_open_from_exported_data() {
         use std::fs::File;
         use std::io::BufReader;
