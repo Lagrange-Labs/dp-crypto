@@ -109,7 +109,7 @@ impl HyperKZGGpuSRS {
         };
 
         // Eagerly upload to GPU
-        let mut guard = GPU_FUSED.lock().unwrap();
+        let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
         guard.ensure_init().expect("GPU init failed");
         guard
             .ensure_bases_uploaded_gpu(&pk.bases_gpu)
@@ -168,7 +168,7 @@ impl HyperKZGGpuProverKey {
     pub fn from_cpu(pk: &HyperKZGProverKey<Bn254>) -> Self {
         let bases_gpu = convert_bases_to_gpu(pk.g1_powers());
         // Eagerly upload to GPU so holding a prover key = SRS already on GPU
-        let mut guard = GPU_FUSED.lock().unwrap();
+        let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
         guard.ensure_init().expect("GPU init failed");
         guard
             .ensure_bases_uploaded_gpu(&bases_gpu)
@@ -199,7 +199,7 @@ impl<'de> Deserialize<'de> for HyperKZGGpuProverKey {
             .map_err(serde::de::Error::custom)?;
         let bases_gpu = convert_bases_to_gpu(&cpu_bases);
         // Eagerly upload to GPU
-        let mut guard = GPU_FUSED.lock().unwrap();
+        let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
         guard.ensure_init().map_err(serde::de::Error::custom)?;
         guard
             .ensure_bases_uploaded_gpu(&bases_gpu)
@@ -389,7 +389,7 @@ pub fn gpu_batch_commit(
                     .stack_size(8 * 1024 * 1024) // 8MB: debug-mode GPU closures exceed the 2MB default
                     .spawn_scoped(s, move || -> anyhow::Result<Vec<Vec<G1Projective>>> {
                         let t_gpu = std::time::Instant::now();
-                        let guard = GPU_FUSED.lock().unwrap();
+                        let guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
                         let fused = guard.fused.as_ref().expect(
                             "GPU not initialized — HyperKZGGpuProverKey must be created before gpu_batch_commit",
                         );
@@ -785,7 +785,7 @@ impl HyperKZGGpu<Bn254> {
 
         // Single lock scope: upload GPU bases directly (no conversion), then run fused_open
         let result = {
-            let mut guard = GPU_FUSED.lock().unwrap();
+            let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
             let upload_start = std::time::Instant::now();
             guard.ensure_bases_uploaded_gpu(pk.bases_gpu())?;
             eprintln!(
@@ -1750,7 +1750,7 @@ mod tests {
 
         // Initialize GPU + upload bases
         {
-            let mut guard = GPU_FUSED.lock().unwrap();
+            let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
             guard
                 .ensure_bases_uploaded_gpu(&gpu_pk.bases_gpu()[..max_size])
                 .unwrap();
@@ -1776,7 +1776,7 @@ mod tests {
 
             // CPU rayon MSM
             let cpu_bases = {
-                let guard = GPU_FUSED.lock().unwrap();
+                let guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
                 guard.cached_cpu_bases.as_ref().unwrap().1.clone()
             };
             let t_cpu = std::time::Instant::now();
@@ -1793,7 +1793,7 @@ mod tests {
             let cpu_ms = t_cpu.elapsed().as_secs_f64() * 1000.0;
 
             // GPU Pippenger (call fused.batch_commit directly, bypassing threshold)
-            let guard = GPU_FUSED.lock().unwrap();
+            let guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
             let fused = guard.fused.as_ref().unwrap();
             let t_gpu = std::time::Instant::now();
             let _gpu_results = fused
