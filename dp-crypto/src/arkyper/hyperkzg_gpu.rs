@@ -109,7 +109,7 @@ impl HyperKZGGpuSRS {
         };
 
         // Eagerly upload to GPU
-        let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = GPU_FUSED.lock().unwrap();
         guard.ensure_init().expect("GPU init failed");
         guard
             .ensure_bases_uploaded_gpu(&pk.bases_gpu)
@@ -168,7 +168,7 @@ impl HyperKZGGpuProverKey {
     pub fn from_cpu(pk: &HyperKZGProverKey<Bn254>) -> Self {
         let bases_gpu = convert_bases_to_gpu(pk.g1_powers());
         // Eagerly upload to GPU so holding a prover key = SRS already on GPU
-        let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = GPU_FUSED.lock().unwrap();
         guard.ensure_init().expect("GPU init failed");
         guard
             .ensure_bases_uploaded_gpu(&bases_gpu)
@@ -199,7 +199,7 @@ impl<'de> Deserialize<'de> for HyperKZGGpuProverKey {
             .map_err(serde::de::Error::custom)?;
         let bases_gpu = convert_bases_to_gpu(&cpu_bases);
         // Eagerly upload to GPU
-        let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = GPU_FUSED.lock().unwrap();
         guard.ensure_init().map_err(serde::de::Error::custom)?;
         guard
             .ensure_bases_uploaded_gpu(&bases_gpu)
@@ -373,11 +373,6 @@ pub fn gpu_batch_commit(
     std::thread::scope(|s| -> anyhow::Result<()> {
         // Spawn GPU work on a dedicated thread
         let gpu_handle = if !gpu_groups.is_empty() {
-            let gpu_max_len = gpu_groups
-                .iter()
-                .map(|(poly_len, _, _)| *poly_len)
-                .max()
-                .unwrap();
             let concurrent_groups: Vec<(Vec<&[Fr]>, usize)> = gpu_groups
                 .iter()
                 .map(|(poly_len, slices, _)| (slices.clone(), *poly_len))
@@ -389,7 +384,7 @@ pub fn gpu_batch_commit(
                     .stack_size(8 * 1024 * 1024) // 8MB: debug-mode GPU closures exceed the 2MB default
                     .spawn_scoped(s, move || -> anyhow::Result<Vec<Vec<G1Projective>>> {
                         let t_gpu = std::time::Instant::now();
-                        let guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
+                        let guard = GPU_FUSED.lock().unwrap();
                         let fused = guard.fused.as_ref().expect(
                             "GPU not initialized — HyperKZGGpuProverKey must be created before gpu_batch_commit",
                         );
@@ -785,7 +780,7 @@ impl HyperKZGGpu<Bn254> {
 
         // Single lock scope: upload GPU bases directly (no conversion), then run fused_open
         let result = {
-            let mut guard = GPU_FUSED.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = GPU_FUSED.lock().unwrap();
             let upload_start = std::time::Instant::now();
             guard.ensure_bases_uploaded_gpu(pk.bases_gpu())?;
             eprintln!(
@@ -1054,6 +1049,11 @@ mod tests {
     use ark_std::UniformRand;
     use ark_std::rand::SeedableRng;
 
+    /// GPU tests must run sequentially: they share a global GPU device (`GPU_FUSED`)
+    /// whose persistent base buffer is overwritten by each test's `from_cpu()`.
+    /// Parallel execution causes one test's bases to stomp another's.
+    static GPU_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Test that GPU fix_var matches CPU fix_var.
     #[test]
     fn test_fix_var_gpu_vs_cpu() {
@@ -1061,6 +1061,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
 
@@ -1090,6 +1091,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(43);
 
@@ -1119,6 +1121,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(44);
 
@@ -1160,6 +1163,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(45);
 
@@ -1250,6 +1254,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
 
@@ -1462,6 +1467,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(47);
         let ell = 10;
@@ -1508,6 +1514,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(48);
         let ell = 10;
@@ -1549,6 +1556,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(49);
         let n = 1 << 8;
@@ -1611,6 +1619,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(50);
 
@@ -1665,6 +1674,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
+        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(55);
 
