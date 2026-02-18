@@ -1049,11 +1049,6 @@ mod tests {
     use ark_std::UniformRand;
     use ark_std::rand::SeedableRng;
 
-    /// GPU tests must run sequentially: they share a global GPU device (`GPU_FUSED`)
-    /// whose persistent base buffer is overwritten by each test's `from_cpu()`.
-    /// Parallel execution causes one test's bases to stomp another's.
-    static GPU_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Test that GPU fix_var matches CPU fix_var.
     #[test]
     fn test_fix_var_gpu_vs_cpu() {
@@ -1061,7 +1056,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
 
@@ -1091,7 +1086,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(43);
 
@@ -1121,7 +1116,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(44);
 
@@ -1163,7 +1158,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(45);
 
@@ -1254,7 +1249,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
 
@@ -1467,7 +1462,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(47);
         let ell = 10;
@@ -1514,7 +1509,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(48);
         let ell = 10;
@@ -1556,7 +1551,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(49);
         let n = 1 << 8;
@@ -1619,7 +1614,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(50);
 
@@ -1674,7 +1669,7 @@ mod tests {
             println!("No GPU available, skipping test");
             return;
         }
-        let _lock = GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(55);
 

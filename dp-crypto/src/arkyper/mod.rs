@@ -988,6 +988,12 @@ mod tests {
     }
 }
 
+/// GPU tests must run sequentially: they share a global GPU device whose persistent
+/// state is overwritten by each test's SRS setup. Parallel execution causes one test's
+/// bases to stomp another's.
+#[cfg(all(test, feature = "cuda"))]
+pub(crate) static GPU_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(all(test, feature = "cuda"))]
 mod gpu_tests {
     use super::*;
@@ -998,6 +1004,7 @@ mod gpu_tests {
 
     #[test]
     fn test_msm_gpu_vs_cpu() {
+        let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         for ell in [10, 12, 14] {
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64);
             let n = 1 << ell;
@@ -1025,6 +1032,7 @@ mod gpu_tests {
 
     #[test]
     fn test_commit_gpu_vs_cpu() {
+        let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         for ell in [10, 12, 14] {
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 100);
             let n = 1 << ell;
@@ -1048,6 +1056,7 @@ mod gpu_tests {
 
     #[test]
     fn test_open_gpu_produces_valid_proof() {
+        let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         for ell in [10, 12] {
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 200);
             let n = 1 << ell;
@@ -1075,6 +1084,7 @@ mod gpu_tests {
 
     #[test]
     fn test_batch_msm_gpu_vs_cpu() {
+        let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
         let ell = 12;
         let n = 1 << ell;
