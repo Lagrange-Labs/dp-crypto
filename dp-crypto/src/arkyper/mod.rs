@@ -988,9 +988,22 @@ mod tests {
     }
 }
 
-/// GPU tests must run sequentially: they share a global GPU device whose persistent
-/// state is overwritten by each test's SRS setup. Parallel execution causes one test's
-/// bases to stomp another's.
+/// Serialization mutex for ALL GPU tests across the crate.
+///
+/// Both `arkyper::gpu_tests` (old MSM path via `SingleMultiexpKernel`) and
+/// `arkyper::hyperkzg_gpu::tests` (new fused path via `FusedPolyCommit / GPU_FUSED`)
+/// share a single physical GPU device. Each test creates its own SRS and uploads
+/// bases to a global persistent GPU buffer. Without serialization, concurrent tests
+/// overwrite each other's bases — leading to wrong commitments, verification failures,
+/// or "not enough bases" panics.
+///
+/// Every GPU test must acquire this lock before doing ANY GPU work (SRS creation,
+/// base upload, commit, open). The lock uses `unwrap_or_else(|e| e.into_inner())`
+/// instead of `unwrap()` to recover from poison: if one test panics while holding
+/// the lock, subsequent tests can still run instead of cascading into PoisonError.
+///
+/// This does NOT affect production code — only tests. In production there is a single
+/// prover key whose bases are uploaded once and reused for the lifetime of the process.
 #[cfg(all(test, feature = "cuda"))]
 pub(crate) static GPU_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -1004,6 +1017,7 @@ mod gpu_tests {
 
     #[test]
     fn test_msm_gpu_vs_cpu() {
+        // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
         let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         for ell in [10, 12, 14] {
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64);
@@ -1032,6 +1046,7 @@ mod gpu_tests {
 
     #[test]
     fn test_commit_gpu_vs_cpu() {
+        // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
         let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         for ell in [10, 12, 14] {
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 100);
@@ -1056,6 +1071,7 @@ mod gpu_tests {
 
     #[test]
     fn test_open_gpu_produces_valid_proof() {
+        // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
         let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         for ell in [10, 12] {
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(ell as u64 + 200);
@@ -1084,6 +1100,7 @@ mod gpu_tests {
 
     #[test]
     fn test_batch_msm_gpu_vs_cpu() {
+        // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
         let _lock = super::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
         let ell = 12;
