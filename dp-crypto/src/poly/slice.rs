@@ -32,6 +32,15 @@ impl<'a, T> Default for SmartSlice<'a, T> {
 }
 
 impl<'a, T> SmartSlice<'a, T> {
+    /// Returns a SmartSlice that borrows from the current smart slice.
+    /// It panics if the smart slice is a mutable borrowed slice.
+    pub fn as_borrow<'b>(&'a self) -> SmartSlice<'b,T> where 'a: 'b {
+        match self {
+            SmartSlice::Borrowed(slice) => SmartSlice::Borrowed(slice),
+            SmartSlice::Owned(vec) => SmartSlice::Borrowed(vec.as_slice()),
+            SmartSlice::BorrowedMut(_) => panic!("as_borrow on mutable slice"),
+        }
+    }
     /// ensures the data is owned and returns a mutable slice.
     ///
     /// Panic if the data is reference borrowed

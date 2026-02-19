@@ -7,6 +7,7 @@ use ark_std::cfg_iter;
 use rayon::prelude::*;
 
 use crate::poly::dense::DensePolynomial;
+
 pub fn poly_msm<'a, A: AffineRepr>(
     g1_powers: &[A],
     poly: &impl Borrow<DensePolynomial<'a, A::ScalarField>>,
@@ -26,8 +27,6 @@ pub fn batch_poly_msm<'a, A: AffineRepr>(
     let r = cfg_iter!(coeffs)
         .map(|coeffs| {
             let msm_size = coeffs.len();
-            // TODO: move to msm_bigint as they do in arkworks KZG
-            // https://github.com/arkworks-rs/poly-commit/blob/master/poly-commit/src/kzg10/mod.rs#L171-L204
             <A::Group as VariableBaseMSM>::msm(&g1_powers[..msm_size], coeffs)
                 .map_err(|e| anyhow::anyhow!("MSM error: {e}"))
         })

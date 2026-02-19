@@ -1,5 +1,8 @@
+#[allow(unused_imports)]
 use ark_bn254::{Bn254, Fr};
+#[allow(unused_imports)]
 use ark_poly::DenseMultilinearExtension;
+#[allow(unused_imports)]
 use ark_poly_commit::multilinear_pc::MultilinearPC;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
@@ -7,6 +10,9 @@ use dp_crypto::{
     arkyper::{CommitmentScheme, HyperKZG},
     poly::{dense::DensePolynomial as ADensePolynomial, slice::SmartSlice},
 };
+#[cfg(feature = "cuda")]
+use dp_crypto::arkyper::HyperKZGGpu;
+#[allow(unused_imports)]
 use jolt_core::poly::{
     commitment::{
         commitment_scheme::CommitmentScheme as CScheme, hyperkzg::HyperKZG as JoltHyperKZG,
@@ -16,11 +22,10 @@ use jolt_core::poly::{
 };
 
 fn main() {
-    // Run registered benchmarks.
     divan::main();
 }
 
-const LENS: [usize; 3] = [12, 14, 16];
+const LENS: [usize; 4] = [16, 18, 20, 23];
 
 const NUM_BATCHED_POLYS: [usize; 2] = [3, 5];
 
@@ -55,6 +60,33 @@ mod commit {
         })
         .bench_local_values(|(polys, (pp, _))| {
             HyperKZG::<Bn254>::batch_commit(&pp, &polys).unwrap()
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_commit(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
+            (evals, HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n))
+        })
+        .bench_local_values(|(s, (pp, _))| {
+            let poly = ADensePolynomial::new(s);
+            HyperKZGGpu::<Bn254>::commit(&pp, &poly)
+        })
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_batch_commit<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let polys = (0..NUM_BATCHED_POLYS)
+                .map(|_| ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize)))
+                .collect::<Vec<_>>();
+            (polys, HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n))
+        })
+        .bench_local_values(|(polys, (pp, _))| {
+            HyperKZGGpu::<Bn254>::batch_commit(&pp, &polys).unwrap()
         })
     }
 
@@ -164,12 +196,17 @@ mod commit {
 mod open {
     use ark_bn254::Fr;
     use ark_ff::AdditiveGroup;
-    use dp_crypto::arkyper::transcript::Transcript;
     use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
+    use dp_crypto::arkyper::transcript::Transcript;
+    #[allow(unused_imports)]
     use jolt_core::field::JoltField;
+    #[allow(unused_imports)]
     use jolt_core::poly::dense_mlpoly::DensePolynomial as JoltDense;
+    #[allow(unused_imports)]
     use jolt_core::poly::multilinear_polynomial::MultilinearPolynomial as JoltMLE;
+    #[allow(unused_imports)]
     use jolt_core::transcripts::Blake2bTranscript;
+    #[allow(unused_imports)]
     use jolt_core::transcripts::Transcript as T;
 
     use super::*;
@@ -214,6 +251,51 @@ mod open {
                 &challenges,
             );
             HyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut prove_transcript).unwrap()
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_open(b: Bencher, n: usize) {
+        use dp_crypto::arkyper::HyperKZGGpu;
+
+        b.with_inputs(|| {
+            let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
+            let (pp, _) = HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n);
+            let poly = ADensePolynomial::new_from_smart_slice(SmartSlice::Owned(evals));
+            let r_len = poly.num_vars();
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            let transcript = Blake3Transcript::new(b"hyperkzg_test");
+            (pp, poly, point, transcript)
+        })
+        .bench_local_values(|(pp, poly, point, mut prove_transcript)| {
+            HyperKZGGpu::<Bn254>::prove(&pp, &poly, &point, None, &mut prove_transcript)
+        })
+    }
+
+    #[divan::bench(args = LENS, consts = NUM_BATCHED_POLYS)]
+    #[cfg(feature = "cuda")]
+    fn arkyper_gpu_batch_open<const NUM_BATCHED_POLYS: usize>(b: Bencher, n: usize) {
+        use dp_crypto::arkyper::HyperKZGGpu;
+
+        b.with_inputs(|| {
+            let polys = (0..NUM_BATCHED_POLYS)
+                .map(|_| ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize)))
+                .collect::<Vec<_>>();
+            let (pp, _) = HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n);
+            let point = (0..n).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            let transcript = Blake3Transcript::new(b"hyperkzg_test");
+            (pp, polys, point, transcript)
+        })
+        .bench_local_values(|(pp, polys, point, mut prove_transcript)| {
+            let challenges = (0..polys.len())
+                .map(|_| prove_transcript.challenge_scalar())
+                .collect::<Vec<_>>();
+            let poly = ADensePolynomial::linear_combination(
+                &polys.iter().collect::<Vec<_>>(),
+                &challenges,
+            );
+            HyperKZGGpu::<Bn254>::prove(&pp, &poly, &point, None, &mut prove_transcript).unwrap()
         })
     }
 
@@ -386,15 +468,18 @@ mod open {
                 .map(|_| E::random(&mut thread_rng()))
                 .collect::<Vec<_>>();
             let transcript = T::new(b"basefold_bench");
-            let rmms = mles.iter().map(|mle| {
-                RowMajorMatrix::new_by_inner_matrix(
-                    p3::matrix::dense::DenseMatrix::new(
-                        transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
-                        1,
-                    ),
-                    witness::InstancePaddingStrategy::Default,
-                )
-            }).collect::<Vec<_>>();
+            let rmms = mles
+                .iter()
+                .map(|mle| {
+                    RowMajorMatrix::new_by_inner_matrix(
+                        p3::matrix::dense::DenseMatrix::new(
+                            transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                            1,
+                        ),
+                        witness::InstancePaddingStrategy::Default,
+                    )
+                })
+                .collect::<Vec<_>>();
             let commitment = Pcs::batch_commit(&pp, rmms).unwrap();
             let claims = mles
                 .iter()
@@ -403,12 +488,7 @@ mod open {
             (pp, claims, commitment, transcript)
         })
         .bench_local_values(|(pp, claims, commitment, mut prove_transcript)| {
-            Pcs::batch_open(
-                &pp,
-                vec![(&commitment, claims)],
-                &mut prove_transcript,
-            )
-            .unwrap()
+            Pcs::batch_open(&pp, vec![(&commitment, claims)], &mut prove_transcript).unwrap()
         });
     }
 
@@ -442,16 +522,19 @@ mod open {
                 .map(|_| E::random(&mut thread_rng()))
                 .collect::<Vec<_>>();
             let transcript = T::new(b"basefold_bench");
-            let comms = mles.iter().map(|mle| {
-                let rmm = RowMajorMatrix::new_by_inner_matrix(
-                    p3::matrix::dense::DenseMatrix::new(
-                        transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
-                        1,
-                    ),
-                    witness::InstancePaddingStrategy::Default,
-                );
-                Pcs::batch_commit(&pp, vec![rmm]).unwrap()
-            }).collect::<Vec<_>>();
+            let comms = mles
+                .iter()
+                .map(|mle| {
+                    let rmm = RowMajorMatrix::new_by_inner_matrix(
+                        p3::matrix::dense::DenseMatrix::new(
+                            transpose(vec![mle.get_base_field_vec().to_vec()]).concat(),
+                            1,
+                        ),
+                        witness::InstancePaddingStrategy::Default,
+                    );
+                    Pcs::batch_commit(&pp, vec![rmm]).unwrap()
+                })
+                .collect::<Vec<_>>();
             let claims = mles
                 .iter()
                 .map(|mle| vec![(point.clone(), vec![mle.evaluate(&point)])])

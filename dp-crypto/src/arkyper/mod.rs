@@ -25,6 +25,21 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::borrow::Borrow;
 use std::marker::PhantomData;
+#[cfg(feature = "cuda")]
+pub mod gpu_msm;
+#[cfg(feature = "cuda")]
+pub mod hyperkzg_gpu;
+#[cfg(feature = "cuda")]
+pub use hyperkzg_gpu::{HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGGpuSRS, gpu_setup};
+
+/// Mutex to serialize GPU tests. GPU operations are not thread-safe across
+/// multiple test threads because they share global GPU state (lazy statics
+/// `GPU_FUSED`, `GPU_POLY_OPS`, `GPU_MSM`). Without serialization, concurrent
+/// tests can race on GPU context initialization, base uploads, and kernel
+/// launches, causing sporadic failures.
+#[cfg(all(test, feature = "cuda"))]
+pub static GPU_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub mod interface;
 pub mod msm;
 pub mod transcript;
@@ -42,7 +57,13 @@ pub struct HyperKZGSRS<P: Pairing>(UniversalParams<P>);
 
 impl<P: Pairing> HyperKZGSRS<P> {
     pub fn setup<R: Rng + RngCore>(rng: &mut R, max_degree: usize) -> Self {
-        let params = KZG10::<P, UniPoly<P>>::setup(max_degree, true, rng).unwrap();
+        let params = KZG10::<P, UniPoly<P>>::setup(max_degree, false, rng).unwrap();
+        Self(params)
+    }
+
+    /// Create HyperKZGSRS from pre-computed UniversalParams.
+    /// Used by GPU-accelerated setup.
+    pub fn from_params(params: UniversalParams<P>) -> Self {
         Self(params)
     }
 
@@ -167,7 +188,6 @@ fn compute_witness_polynomial<P: Pairing>(
     u: P::ScalarField,
 ) -> Vec<P::ScalarField> {
     let d = f.len();
-
     // Compute h(x) = f(x)/(x - u)
     let mut h = vec![P::ScalarField::zero(); d];
     for i in (1..d).rev() {
@@ -332,11 +352,11 @@ impl<P: Pairing> HyperKZG<P> {
         let n = poly.len();
         assert_eq!(n, 1 << ell); // Below we assume that n is a power of two
 
-        // Phase 1  -- create commitments com_1, ..., com_\ell
+        // Phase 1 -- create commitments com_1, ..., com_\ell
         // We do not compute final Pi (and its commitment) as it is constant and equals to 'eval'
         // also known to verifier, so can be derived on its side as well
         let mut polys: Vec<DensePolynomial<P::ScalarField>> = Vec::new();
-        polys.push(poly.clone());
+        polys.push(poly.shallow_clone());
         for i in 0..ell - 1 {
             let previous_poly: &DensePolynomial<P::ScalarField> = &polys[i];
             let pi_len = previous_poly.len() / 2;
@@ -522,8 +542,77 @@ impl<P: Pairing> AppendToTranscript for HyperKZGCommitment<P> {
     }
 }
 
+// ── PCS data export structs (for CPU vs GPU experimentation) ──
+
+/// A single polynomial's evaluations, for serialization.
+pub struct PolyExportEntry<F: ark_ff::Field> {
+    pub num_vars: usize,
+    pub evals: Vec<F>,
+}
+
+/// Exported data from PCS::batch_commit.
+pub struct PcsCommitExport<F: ark_ff::Field> {
+    pub polys: Vec<PolyExportEntry<F>>,
+}
+
+impl<F: ark_ff::Field> PcsCommitExport<F> {
+    /// Write using arkworks CanonicalSerialize (fast, no 4GB limit).
+    pub fn write_canonical<W: std::io::Write>(&self, writer: &mut W) -> anyhow::Result<()> {
+        let num_polys = self.polys.len() as u64;
+        num_polys.serialize_compressed(&mut *writer)?;
+        for poly in &self.polys {
+            let num_vars = poly.num_vars as u64;
+            num_vars.serialize_compressed(&mut *writer)?;
+            poly.evals.serialize_compressed(&mut *writer)?;
+        }
+        Ok(())
+    }
+
+    /// Read using arkworks CanonicalDeserialize.
+    pub fn read_canonical<R: std::io::Read>(reader: &mut R) -> anyhow::Result<Self> {
+        let num_polys = u64::deserialize_compressed(&mut *reader)? as usize;
+        let mut polys = Vec::with_capacity(num_polys);
+        for _ in 0..num_polys {
+            let num_vars = u64::deserialize_compressed(&mut *reader)? as usize;
+            let evals: Vec<F> = CanonicalDeserialize::deserialize_compressed(&mut *reader)?;
+            polys.push(PolyExportEntry { num_vars, evals });
+        }
+        Ok(PcsCommitExport { polys })
+    }
+}
+
+/// Exported data from PCS::prove (single aggregated polynomial + opening point).
+pub struct PcsOpenExport<F: ark_ff::Field> {
+    pub poly: PolyExportEntry<F>,
+    pub point: Vec<F>,
+}
+
+impl<F: ark_ff::Field> PcsOpenExport<F> {
+    /// Write using arkworks CanonicalSerialize (fast, no 4GB limit).
+    pub fn write_canonical<W: std::io::Write>(&self, writer: &mut W) -> anyhow::Result<()> {
+        let num_vars = self.poly.num_vars as u64;
+        num_vars.serialize_compressed(&mut *writer)?;
+        self.poly.evals.serialize_compressed(&mut *writer)?;
+        self.point.serialize_compressed(&mut *writer)?;
+        Ok(())
+    }
+
+    /// Read using arkworks CanonicalDeserialize.
+    pub fn read_canonical<R: std::io::Read>(reader: &mut R) -> anyhow::Result<Self> {
+        let num_vars = u64::deserialize_compressed(&mut *reader)? as usize;
+        let evals: Vec<F> = CanonicalDeserialize::deserialize_compressed(&mut *reader)?;
+        let point: Vec<F> = CanonicalDeserialize::deserialize_compressed(&mut *reader)?;
+        Ok(PcsOpenExport {
+            poly: PolyExportEntry { num_vars, evals },
+            point,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use super::*;
     use crate::{arkyper::transcript::blake3::Blake3Transcript, poly::challenge};
     use ark_bn254::{Bn254, Fr};
@@ -635,5 +724,275 @@ mod tests {
         let mut transcript = Blake3Transcript::new(b"batch_open");
 
         HyperKZG::verify(&vp, &comm, &opening_point, &eval, &proof, &mut transcript)
+    }
+
+    /// Pre-generate SRS files for measurement tests.
+    ///
+    /// Loads both data files (commit polys + open poly) to discover needed sizes,
+    /// generates a CPU SRS for each unique size, and saves to `/tmp/pcs_srs_{size}.bin`.
+    /// Run this once before the measurement tests.
+    #[test]
+    #[ignore = "only generate when running test_gpu/cpu_from_exported_data"]
+    fn test_generate_srs() {
+        use ark_bn254::G1Affine;
+        use std::collections::BTreeSet;
+        use std::fs::File;
+        use std::io::{BufReader, BufWriter, Write};
+        use std::time::Instant;
+
+        macro_rules! log {
+            ($($arg:tt)*) => {{
+                println!($($arg)*);
+                std::io::stdout().flush().unwrap();
+            }};
+        }
+
+        let mut rng = <rand_chacha::ChaCha20Rng as ark_std::rand::SeedableRng>::seed_from_u64(100);
+        let mut sizes = BTreeSet::new();
+
+        log!("[generate-srs] Scanning data files for needed SRS sizes...");
+
+        if let Ok(file) = File::open("/tmp/pcs_commit_polys.bin") {
+            log!("[generate-srs] Deserializing /tmp/pcs_commit_polys.bin...");
+            let t = Instant::now();
+            let export: PcsCommitExport<Fr> =
+                PcsCommitExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize commit polys failed");
+            let max_len = export.polys.iter().map(|e| e.evals.len()).max().unwrap();
+            sizes.insert(max_len);
+            log!(
+                "[generate-srs] commit polys: {} polys, max_len={} ({:.2?})",
+                export.polys.len(),
+                max_len,
+                t.elapsed()
+            );
+        } else {
+            log!("[generate-srs] No /tmp/pcs_commit_polys.bin found");
+        }
+
+        if let Ok(file) = File::open("/tmp/pcs_open_poly.bin") {
+            log!("[generate-srs] Deserializing /tmp/pcs_open_poly.bin...");
+            let t = Instant::now();
+            let export: PcsOpenExport<Fr> =
+                PcsOpenExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize open poly failed");
+            let len = export.poly.evals.len();
+            sizes.insert(len);
+            log!(
+                "[generate-srs] open poly: len={} ({:.2?})",
+                len,
+                t.elapsed()
+            );
+        } else {
+            log!("[generate-srs] No /tmp/pcs_open_poly.bin found");
+        }
+
+        if sizes.is_empty() {
+            panic!("No data files found — cannot determine SRS sizes");
+        }
+
+        log!(
+            "[generate-srs] Unique sizes to generate: {:?}",
+            sizes.iter().collect::<Vec<_>>()
+        );
+
+        for size in &sizes {
+            // Delete existing file first
+            let path = format!("/tmp/pcs_srs_{}.bin", size);
+            if std::path::Path::new(&path).exists() {
+                std::fs::remove_file(&path).expect("failed to delete old SRS file");
+                log!("[generate-srs] Deleted existing {}", path);
+            }
+
+            log!("[generate-srs] Generating SRS for size={}...", size);
+            let t_gen = Instant::now();
+            let srs = HyperKZGSRS::<Bn254>::setup(&mut rng, *size);
+            log!("[generate-srs]   SRS::setup: {:.2?}", t_gen.elapsed());
+            let t_trim = Instant::now();
+            let (cpu_pk, _vk) = srs.trim(*size);
+            log!(
+                "[generate-srs]   trim: {:.2?} ({} g1_powers)",
+                t_trim.elapsed(),
+                cpu_pk.g1_powers().len()
+            );
+            let gen_time = t_gen.elapsed();
+
+            // Serialize g1_powers using arkworks CanonicalSerialize (streams compressed
+            // points directly to disk — no 4GB msgpack bin32 limit, ~2x smaller files).
+            log!(
+                "[generate-srs] Writing g1_powers to {} (compressed)...",
+                path
+            );
+            let t_write = Instant::now();
+            {
+                let mut writer =
+                    BufWriter::new(File::create(&path).expect("create SRS file failed"));
+                cpu_pk
+                    .g1_powers()
+                    .serialize_compressed(&mut writer)
+                    .expect("serialize g1_powers failed");
+                writer.flush().unwrap();
+            }
+            let file_size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+            let write_time = t_write.elapsed();
+            log!(
+                "[generate-srs]   wrote {} bytes ({:.2?})",
+                file_size,
+                write_time
+            );
+
+            // Roundtrip verify
+            log!("[generate-srs] Roundtrip verification...");
+            let t_read = Instant::now();
+            let loaded_powers: Vec<G1Affine> = {
+                let mut reader = BufReader::new(File::open(&path).expect("reopen SRS file failed"));
+                CanonicalDeserialize::deserialize_compressed(&mut reader)
+                    .expect("deserialize g1_powers failed")
+            };
+            let read_time = t_read.elapsed();
+            assert_eq!(
+                loaded_powers.len(),
+                cpu_pk.g1_powers().len(),
+                "roundtrip g1_powers len mismatch"
+            );
+            log!(
+                "[generate-srs]   read+deserialize: {:.2?}, {} g1_powers OK",
+                read_time,
+                loaded_powers.len()
+            );
+
+            log!(
+                "=== SRS size={}: generate {:.2?}, write {:.2?}, roundtrip {:.2?} ===",
+                size,
+                gen_time,
+                write_time,
+                read_time
+            );
+        }
+    }
+
+    /// Load g1_powers from a SRS file written by test_generate_srs.
+    /// Uses arkworks CanonicalDeserialize (compressed format).
+    fn load_srs_from_file(path: &str) -> HyperKZGProverKey<Bn254> {
+        use ark_bn254::G1Affine;
+        use std::fs::File;
+        use std::io::BufReader;
+
+        let mut reader = BufReader::new(File::open(path).unwrap_or_else(|e| {
+            panic!("SRS file not found at {path}: {e}. Run test_generate_srs first.")
+        }));
+        let powers: Vec<G1Affine> = CanonicalDeserialize::deserialize_compressed(&mut reader)
+            .expect("deserialize g1_powers failed");
+        HyperKZGProverKey {
+            kzg_pk: Powers {
+                powers_of_g: std::borrow::Cow::Owned(powers),
+                powers_of_gamma_g: std::borrow::Cow::Owned(vec![]),
+            },
+        }
+    }
+
+    /// CPU batch_commit measurement from exported data.
+    /// Loads pre-generated SRS from disk (run test_generate_srs first).
+    #[test]
+    #[ignore = "only manual testing - requires generate_srs first"]
+    fn test_cpu_commit_from_exported_data() {
+        use std::fs::File;
+        use std::io::BufReader;
+        use std::time::Instant;
+
+        println!("[cpu-commit] Loading commit polys...");
+        let t0 = Instant::now();
+        let (polys, num_polys, max_len) = {
+            let file = match File::open("/tmp/pcs_commit_polys.bin") {
+                Ok(f) => f,
+                Err(_) => {
+                    println!("No export file found, skipping");
+                    return;
+                }
+            };
+            let export: PcsCommitExport<Fr> =
+                PcsCommitExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize failed");
+            let polys: Vec<DensePolynomial<Fr>> = export
+                .polys
+                .into_iter()
+                .map(|e| DensePolynomial::new(e.evals))
+                .collect();
+            let num_polys = polys.len();
+            let max_len = polys.iter().map(|p| p.len()).max().unwrap();
+            (polys, num_polys, max_len)
+        };
+        let per_size = polys.iter().fold(HashMap::new(), |mut acc, p| {
+            *acc.entry(p.num_vars()).or_insert(0) += 1;
+            acc
+        });
+        println!(
+            "[cpu-commit] Loaded {} polys in {:.2?} -> per sizes {:?}",
+            num_polys,
+            t0.elapsed(),
+            per_size,
+        );
+
+        let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
+        println!("[cpu-commit] Loading SRS from {}...", srs_path);
+        let t_load = Instant::now();
+        let cpu_pk = load_srs_from_file(&srs_path);
+        let load_time = t_load.elapsed();
+        println!("[cpu-commit] SRS loaded: {:.2?}", load_time);
+
+        let t_commit = Instant::now();
+        let _commits =
+            HyperKZG::<Bn254>::batch_commit(&cpu_pk, &polys).expect("CPU batch_commit failed");
+        let commit_time = t_commit.elapsed();
+
+        println!(
+            "=== CPU commit: load {:.2?}, batch_commit {:.2?} ({} polys) ===",
+            load_time, commit_time, num_polys
+        );
+    }
+
+    /// CPU prove measurement from exported data.
+    /// Loads pre-generated SRS from disk (run test_generate_srs first).
+    #[test]
+    #[ignore = "only manual testing - requires generate_srs first"]
+    fn test_cpu_open_from_exported_data() {
+        use std::fs::File;
+        use std::io::BufReader;
+        use std::time::Instant;
+
+        println!("[cpu-open] Loading open poly...");
+        let (poly, point) = {
+            let file = match File::open("/tmp/pcs_open_poly.bin") {
+                Ok(f) => f,
+                Err(_) => {
+                    println!("No export file found, skipping");
+                    return;
+                }
+            };
+            let export: PcsOpenExport<Fr> =
+                PcsOpenExport::read_canonical(&mut BufReader::new(file))
+                    .expect("deserialize failed");
+            (DensePolynomial::new(export.poly.evals), export.point)
+        };
+        let max_len = poly.len();
+        println!("[cpu-open] Loaded poly nv={}", poly.num_vars());
+
+        let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
+        println!("[cpu-open] Loading SRS from {}...", srs_path);
+        let t_load = Instant::now();
+        let cpu_pk = load_srs_from_file(&srs_path);
+        let load_time = t_load.elapsed();
+        println!("[cpu-open] SRS loaded: {:.2?}", load_time);
+
+        let t_prove = Instant::now();
+        let mut transcript = Blake3Transcript::new(b"ExportedTest");
+        let _proof = HyperKZG::<Bn254>::prove(&cpu_pk, &poly, &point, None, &mut transcript)
+            .expect("CPU prove failed");
+        let prove_time = t_prove.elapsed();
+
+        println!(
+            "=== CPU open: load {:.2?}, prove {:.2?} ===",
+            load_time, prove_time
+        );
     }
 }
