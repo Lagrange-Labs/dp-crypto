@@ -39,31 +39,6 @@ impl GpuMsm {
         Ok(Self { kernel, pool })
     }
 
-    pub fn new_single_device(device_index: usize) -> anyhow::Result<Self> {
-        let devices = Device::all();
-        if devices.is_empty() {
-            return Err(anyhow::anyhow!("No GPU devices found"));
-        }
-        if device_index >= devices.len() {
-            return Err(anyhow::anyhow!(
-                "Device index {} out of range (available: {})",
-                device_index,
-                devices.len()
-            ));
-        }
-
-        let device = &devices[device_index];
-        let msm_program =
-            program!(device).map_err(|e| anyhow::anyhow!("Failed to create GPU program for MSM: {e}"))?;
-
-        let kernel = MultiexpKernel::create(vec![msm_program], std::slice::from_ref(device))
-            .map_err(|e| anyhow::anyhow!("Failed to create MSM kernel: {e}"))?;
-
-        let pool = Worker::new();
-
-        Ok(Self { kernel, pool })
-    }
-
     pub fn msm(&mut self, bases: &[G1Affine], scalars: &[Fr]) -> anyhow::Result<G1Projective> {
         if bases.len() != scalars.len() {
             return Err(anyhow::anyhow!(
@@ -114,12 +89,6 @@ impl GpuMsm {
         Ok(results)
     }
 
-}
-
-impl Default for GpuMsm {
-    fn default() -> Self {
-        Self::new().expect("Failed to create GpuMsm")
-    }
 }
 
 fn fq_to_montgomery_bytes(x: &Fq) -> [u8; 32] {

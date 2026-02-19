@@ -21,7 +21,6 @@ use super::gpu_msm::{convert_bases_from_gpu, convert_bases_to_gpu};
 use super::transcript::Transcript;
 use super::{
     HyperKZGCommitment, HyperKZGProof, HyperKZGProverKey, HyperKZGSRS, HyperKZGVerifierKey,
-    kzg_open_batch,
 };
 use crate::arkyper::interface::CommitmentScheme;
 use crate::poly::dense::DensePolynomial;
@@ -58,12 +57,6 @@ impl<P: Pairing> Default for HyperKZGGpu<P> {
         Self {
             _phantom: PhantomData,
         }
-    }
-}
-
-impl<P: Pairing> HyperKZGGpu<P> {
-    pub fn new() -> Self {
-        Self::default()
     }
 }
 
@@ -294,7 +287,6 @@ pub fn gpu_batch_commit(
 
     let threshold = gpu_msm_threshold();
     let has_cpu_polys = by_size.keys().any(|&len| len <= threshold);
-    let has_gpu_polys = by_size.keys().any(|&len| len > threshold);
 
     // Print bucket distribution
     let bucket_desc: Vec<String> = by_size
@@ -1129,7 +1121,7 @@ mod tests {
             // CPU open
             let mut cpu_transcript = Blake3Transcript::new(b"TestOpen");
             let cpu_proof =
-                HyperKZG::<Bn254>::open_cpu(&cpu_pk, &poly, &point, &eval, &mut cpu_transcript)
+                HyperKZG::<Bn254>::open(&cpu_pk, &poly, &point, &eval, &mut cpu_transcript)
                     .expect("CPU open failed");
 
             // GPU open

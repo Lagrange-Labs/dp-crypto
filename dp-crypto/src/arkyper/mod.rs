@@ -31,6 +31,15 @@ pub mod gpu_msm;
 pub mod hyperkzg_gpu;
 #[cfg(feature = "cuda")]
 pub use hyperkzg_gpu::{HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGGpuSRS, gpu_setup};
+
+/// Mutex to serialize GPU tests. GPU operations are not thread-safe across
+/// multiple test threads because they share global GPU state (lazy statics
+/// `GPU_FUSED`, `GPU_POLY_OPS`, `GPU_MSM`). Without serialization, concurrent
+/// tests can race on GPU context initialization, base uploads, and kernel
+/// launches, causing sporadic failures.
+#[cfg(all(test, feature = "cuda"))]
+pub static GPU_TEST_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub mod interface;
 pub mod msm;
 pub mod transcript;
