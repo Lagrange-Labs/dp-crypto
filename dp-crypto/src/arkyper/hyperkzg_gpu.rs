@@ -31,7 +31,7 @@ use ec_gpu_gen::{
     rust_gpu_tools::Device,
 };
 
-/// Evaluate a polynomial (given as a coefficient slice) at a point using Horner's method.
+/// Evaluate a polynomial (given as a coefficient slice) at a point 
 /// Equivalent to `DensePolynomial::eval_as_univariate` but operates on `&[F]` directly,
 /// avoiding the need to wrap data in a `DensePolynomial`.
 fn eval_as_univariate(coeffs: &[Fr], r: &Fr) -> Fr {
@@ -504,26 +504,6 @@ pub fn gpu_fix_vars_with_intermediates(
         .map_err(|e| anyhow::anyhow!("GPU fix_vars_with_intermediates error: {e}"))
 }
 
-/// GPU-accelerated linear combination of polynomials.
-pub fn gpu_linear_combine(polys: &[&[Fr]], coeffs: &[Fr]) -> anyhow::Result<Vec<Fr>> {
-    GPU_POLY_OPS
-        .lock()
-        .unwrap()
-        .get_or_init()?
-        .linear_combine(polys, coeffs)
-        .map_err(|e| anyhow::anyhow!("GPU linear_combine error: {e}"))
-}
-
-/// GPU-accelerated witness polynomial computation.
-pub fn gpu_witness_poly(f: &[Fr], u: &Fr) -> anyhow::Result<Vec<Fr>> {
-    GPU_POLY_OPS
-        .lock()
-        .unwrap()
-        .get_or_init()?
-        .witness_poly(f, u)
-        .map_err(|e| anyhow::anyhow!("GPU witness_poly error: {e}"))
-}
-
 // ============================================================================
 // CPU Reference Operations (for comparison)
 // ============================================================================
@@ -893,8 +873,6 @@ impl HyperKZGGpu<Bn254> {
             .iter()
             .map(|g| g.into_affine())
             .collect();
-        transcript.append_points(&w_aff);
-        let _d_0: Fr = transcript.challenge_scalar();
         eprintln!(
             "[open_gpu] final transcript: {:?}",
             final_transcript_start.elapsed()
@@ -905,51 +883,6 @@ impl HyperKZGGpu<Bn254> {
             coms: result.intermediate_commitments_affine,
             w: w_aff,
             v: result.evaluations,
-        })
-    }
-
-    /// CPU reference open operation (for comparison).
-    pub fn open_cpu<ProofTranscript: Transcript>(
-        pk: &HyperKZGProverKey<Bn254>,
-        poly: &DensePolynomial<Fr>,
-        point: &[Fr],
-        _eval: &Fr,
-        transcript: &mut ProofTranscript,
-    ) -> anyhow::Result<HyperKZGProof<Bn254>> {
-        let ell = point.len();
-        let n = poly.len();
-        assert_eq!(n, 1 << ell);
-
-        // Phase 1: Create commitments using CPU fix_var
-        let mut polys: Vec<DensePolynomial<Fr>> = Vec::with_capacity(ell);
-        polys.push(poly.clone());
-
-        for i in 0..ell - 1 {
-            let previous_poly = &polys[i];
-            let coeffs = cpu_fix_var(previous_poly.evals_ref(), &point[i]);
-            polys.push(DensePolynomial::new(coeffs));
-        }
-
-        assert_eq!(polys.len(), ell);
-        assert_eq!(polys[ell - 1].len(), 2);
-
-        // Commit using CPU MSM
-        let poly_refs: Vec<&DensePolynomial<Fr>> = polys[1..].iter().collect();
-        let coms = cpu_batch_commit(pk.g1_powers(), &poly_refs)?;
-        let coms_aff: Vec<G1Affine> = coms.iter().map(|c| c.into_affine()).collect();
-
-        // Phase 2
-        transcript.append_points(&coms_aff);
-        let r: Fr = transcript.challenge_scalar();
-        let u = vec![r, -r, r * r];
-
-        // Phase 3
-        let (w, v) = kzg_open_batch(&polys, &u, pk, transcript)?;
-
-        Ok(HyperKZGProof {
-            coms: coms_aff,
-            w,
-            v,
         })
     }
 }
@@ -1196,7 +1129,7 @@ mod tests {
             // CPU open
             let mut cpu_transcript = Blake3Transcript::new(b"TestOpen");
             let cpu_proof =
-                HyperKZGGpu::<Bn254>::open_cpu(&cpu_pk, &poly, &point, &eval, &mut cpu_transcript)
+                HyperKZG::<Bn254>::open_cpu(&cpu_pk, &poly, &point, &eval, &mut cpu_transcript)
                     .expect("CPU open failed");
 
             // GPU open
