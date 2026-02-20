@@ -1241,6 +1241,14 @@ mod tests {
                 HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut gpu_transcript)
                     .expect("GPU prove failed");
 
+
+            let cpu_challenge = cpu_transcript.challenge_scalar::<Fr>();
+            let gpu_challenge = gpu_transcript.challenge_scalar::<Fr>();
+            assert_eq!(
+                cpu_challenge, gpu_challenge,
+                "Transcript challenge scalar differs between CPU and GPU"
+            );
+
             // Verify both proofs
             let mut verify_transcript = Blake3Transcript::new(b"TraitTest");
             HyperKZG::<Bn254>::verify(
