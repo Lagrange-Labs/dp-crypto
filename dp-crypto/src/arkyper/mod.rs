@@ -240,11 +240,6 @@ fn kzg_open_batch<P: Pairing, T: Transcript>(
         .map(|g| g.into_affine())
         .collect::<Vec<P::G1Affine>>();
 
-    // The prover computes the challenge to keep the transcript in the same
-    // state as that of the verifier
-    transcript.append_points(&w_aff);
-    let _d_0: P::ScalarField = transcript.challenge_scalar();
-
     Ok((w_aff, v))
 }
 

@@ -1144,6 +1144,13 @@ mod tests {
                     "Commitment {i} differs between CPU and GPU"
                 );
             }
+            use ark_bn254::Fr as F;
+            let cpu_scalar = cpu_transcript.challenge_scalar::<F>();
+            let gpu_scalar = gpu_transcript.challenge_scalar::<F>();
+            assert_eq!(
+                cpu_scalar, gpu_scalar,
+                "Transcript challenge scalar differs between CPU and GPU"
+            );
 
             // Compare witness commitments
             assert_eq!(cpu_proof.w.len(), gpu_proof.w.len(), "w length differs");
