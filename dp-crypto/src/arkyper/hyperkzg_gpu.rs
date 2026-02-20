@@ -1144,7 +1144,7 @@ mod tests {
                     "Commitment {i} differs between CPU and GPU"
                 );
             }
-            type F = crate::arkyper::transcript::blake3::test::F;
+            type F = arkworks_bn254::Fr;
             let cpu_scalar = cpu_transcript.challenge_scalar::<F>();
             let gpu_scalar = gpu_transcript.challenge_scalar::<F>();
             assert_eq!(
