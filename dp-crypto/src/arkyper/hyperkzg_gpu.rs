@@ -1144,8 +1144,8 @@ mod tests {
                     "Commitment {i} differs between CPU and GPU"
                 );
             }
-            let cpu_scalar = cpu_transcript.challenge_scalar();
-            let gpu_scalar = gpu_transcript.challenge_scalar();
+            let cpu_scalar = cpu_transcript.challenge_scalar::<F>();
+            let gpu_scalar = gpu_transcript.challenge_scalar::<F>();
             assert_eq!(
                 cpu_scalar, gpu_scalar,
                 "Transcript challenge scalar differs between CPU and GPU"
