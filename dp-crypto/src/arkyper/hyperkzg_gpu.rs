@@ -749,6 +749,12 @@ impl HyperKZGGpu<Bn254> {
         _eval: &Fr,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<HyperKZGProof<Bn254>> {
+
+        // debug
+        println!("PROVE INPUT TRANSCRIPT: {:?}", transcript.challenge_scalar::<Fr>());
+        println!("PROVE: OPENING POINT: {:?}",point);
+        println!("PROVE: EVAL: {:?}",_eval);
+
         let ell = point.len();
         let n = poly.len();
         assert_eq!(n, 1 << ell);
@@ -807,6 +813,7 @@ impl HyperKZGGpu<Bn254> {
                         transcript.append_points(&coms_aff);
                         let r: Fr = transcript.challenge_scalar();
                         let u = vec![r, -r, r * r];
+                        println!("GPU U POINTS: {:?}",u);
 
                         eprintln!(
                             "[open_gpu]   callback transcript: {:?}",
@@ -896,6 +903,7 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         rng: &mut R,
         max_num_vars: usize,
     ) -> (Self::ProverSetup, Self::VerifierSetup) {
+        println!("RUNNING GPU TEST SETUP SRS");
         let gpu_srs = gpu_setup(rng, 1 << max_num_vars)
             .expect("GPU setup failed");
         gpu_srs.trim(1 << max_num_vars)
@@ -1200,6 +1208,7 @@ mod tests {
         let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
+        use crate::arkyper::interface::CommitmentScheme;
 
         for ell in [8, 10] {
             let n = 1 << ell;
@@ -1212,9 +1221,11 @@ mod tests {
             let eval = poly.evaluate(&point).expect("eval failed");
 
             // Generate both CPU and GPU prover keys from the same SRS
-            let srs = HyperKZGSRS::setup(&mut rng, n);
-            let (cpu_pk, vk) = srs.trim(n);
-            let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
+            let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
+            let (cpu_pk, vk) = HyperKZG::test_setup(&mut rng, ell);
+            let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
+            let (gpu_pk,_) = HyperKZGGpu::test_setup(&mut rng,ell);
+            //let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
 
             // CPU commit (using original HyperKZG)
             let (cpu_comm, _) =
@@ -1242,13 +1253,7 @@ mod tests {
                     .expect("GPU prove failed");
 
 
-            let cpu_challenge = cpu_transcript.challenge_scalar::<Fr>();
-            let gpu_challenge = gpu_transcript.challenge_scalar::<Fr>();
-            assert_eq!(
-                cpu_challenge, gpu_challenge,
-                "Transcript challenge scalar differs between CPU and GPU"
-            );
-
+            
             // Verify both proofs
             let mut verify_transcript = Blake3Transcript::new(b"TraitTest");
             HyperKZG::<Bn254>::verify(
@@ -1271,6 +1276,13 @@ mod tests {
                 &gpu_comm,
             )
             .expect("GPU proof verification failed");
+
+            let cpu_challenge = cpu_transcript.challenge_scalar::<Fr>();
+            let gpu_challenge = gpu_transcript.challenge_scalar::<Fr>();
+            assert_eq!(
+                cpu_challenge, gpu_challenge,
+                "Transcript challenge scalar differs between CPU and GPU"
+            );
 
             println!("ell={ell}: CPU and GPU produce matching results");
         }

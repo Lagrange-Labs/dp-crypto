@@ -234,6 +234,7 @@ fn kzg_open_batch<P: Pairing, T: Transcript>(
     };
 
     // Now open B at u0, ..., u_{t-1}
+    println!(" U SCALARS: {:?}",u);
     let w = kzg_batch_open_no_rem(&b_poly, u, pk)?;
     let w_aff = w
         .iter()
@@ -325,6 +326,8 @@ fn kzg_verify_batch<P: Pairing, ProofTranscript: Transcript>(
 
     let r = w_points[0] + w_points[1] * d_0 + w_points[2] * d_1;
 
+    println!("r valid ?");
+
     // Check that e(L, vk.H) == e(R, vk.tau_H)
     P::multi_pairing([l, -r], [vk.kzg_vk.h, vk.kzg_vk.beta_h]).is_zero()
 }
@@ -401,6 +404,12 @@ impl<P: Pairing> HyperKZG<P> {
         pi: &HyperKZGProof<P>,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<()> {
+
+        // debug
+        println!("INPUT VERIFICATION SCALAR: {:?}",transcript.challenge_scalar::<P::ScalarField>());
+        println!("INPUT COMM {:?}",comm);
+        println!("INPUT OPENING POINT: {:?}",point);
+        println!("INPUT OPENING: {:?}",px);
         let y = px;
 
         let ell = point.len();
@@ -416,6 +425,7 @@ impl<P: Pairing> HyperKZG<P> {
         coms.insert(0, comm.0); // set com_0 = C, shifts other commitments to the right
 
         let u = vec![r, -r, r * r];
+        println!("U POINTS: {:?}",u);
 
         // Setup vectors (Y, ypos, yneg) from pi.v
         let v = &pi.v;
