@@ -126,7 +126,7 @@ impl<P: Pairing> Default for HyperKZGCommitment<P> {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq)]
 pub struct HyperKZGProof<P: Pairing> {
     #[serde(with = "crate::serialization")]
     pub coms: Vec<P::G1Affine>,

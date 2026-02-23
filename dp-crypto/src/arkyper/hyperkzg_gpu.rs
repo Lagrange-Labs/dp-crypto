@@ -1201,7 +1201,7 @@ mod tests {
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
 
-        for ell in [8, 10] {
+        for ell in [8, 18] {
             let n = 1 << ell;
 
             let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
@@ -1241,6 +1241,12 @@ mod tests {
                 HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut gpu_transcript)
                     .expect("GPU prove failed");
 
+            let cpu_challenge = cpu_transcript.challenge_scalar::<Fr>();
+            let gpu_challenge = gpu_transcript.challenge_scalar::<Fr>();
+            assert_eq!(cpu_challenge, gpu_challenge);
+
+            assert_eq!(gpu_proof, cpu_proof);
+
             // Verify both proofs
             let mut verify_transcript = Blake3Transcript::new(b"TraitTest");
             HyperKZG::<Bn254>::verify(
@@ -1263,6 +1269,17 @@ mod tests {
                 &gpu_comm,
             )
             .expect("GPU proof verification failed");
+
+            let mut verify_transcript = Blake3Transcript::new(b"TraitTest");
+            HyperKZG::<Bn254>::verify(
+                &vk,
+                &cpu_comm,
+                &point,
+                &eval,
+                &gpu_proof,
+                &mut verify_transcript,
+            )
+            .expect("CPU verification of GPU proof failed");
 
             println!("ell={ell}: CPU and GPU produce matching results");
         }
