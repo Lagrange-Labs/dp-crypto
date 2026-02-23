@@ -896,9 +896,9 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         rng: &mut R,
         max_num_vars: usize,
     ) -> (Self::ProverSetup, Self::VerifierSetup) {
-        let srs = HyperKZGSRS::setup(rng, 1 << max_num_vars);
-        let (cpu_pk, vk) = srs.trim(1 << max_num_vars);
-        (HyperKZGGpuProverKey::from_cpu(&cpu_pk), vk)
+        let gpu_srs = gpu_setup(rng, 1 << max_num_vars)
+            .expect("GPU setup failed");
+        gpu_srs.trim(1 << max_num_vars)
     }
 
     #[tracing::instrument(skip_all, name = "HyperKZGGpu::commit")]
