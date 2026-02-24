@@ -234,7 +234,7 @@ fn kzg_open_batch<P: Pairing, T: Transcript>(
     };
 
     // Now open B at u0, ..., u_{t-1}
-    println!(" U SCALARS: {:?}",u);
+    println!(" U SCALARS: {:?}", u);
     let w = kzg_batch_open_no_rem(&b_poly, u, pk)?;
     let w_aff = w
         .iter()
@@ -346,6 +346,7 @@ impl<P: Pairing> HyperKZG<P> {
         _eval: &P::ScalarField,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<HyperKZGProof<P>> {
+        println!("CPU PROVE EVAL: {:?}", _eval);
         let ell = point.len();
         let n = poly.len();
         assert_eq!(n, 1 << ell); // Below we assume that n is a power of two
@@ -404,12 +405,14 @@ impl<P: Pairing> HyperKZG<P> {
         pi: &HyperKZGProof<P>,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<()> {
-
         // debug
-        println!("INPUT VERIFICATION SCALAR: {:?}",transcript.challenge_scalar::<P::ScalarField>());
-        println!("INPUT COMM {:?}",comm);
-        println!("INPUT OPENING POINT: {:?}",point);
-        println!("INPUT OPENING: {:?}",px);
+        println!(
+            "INPUT VERIFICATION SCALAR: {:?}",
+            transcript.challenge_scalar::<P::ScalarField>()
+        );
+        println!("INPUT COMM {:?}", comm);
+        println!("INPUT OPENING POINT: {:?}", point);
+        println!("INPUT OPENING: {:?}", px);
         let y = px;
 
         let ell = point.len();
@@ -425,7 +428,7 @@ impl<P: Pairing> HyperKZG<P> {
         coms.insert(0, comm.0); // set com_0 = C, shifts other commitments to the right
 
         let u = vec![r, -r, r * r];
-        println!("U POINTS: {:?}",u);
+        println!("U POINTS: {:?}", u);
 
         // Setup vectors (Y, ypos, yneg) from pi.v
         let v = &pi.v;

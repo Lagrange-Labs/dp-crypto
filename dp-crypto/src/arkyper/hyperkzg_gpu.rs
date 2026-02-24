@@ -30,7 +30,7 @@ use ec_gpu_gen::{
     rust_gpu_tools::Device,
 };
 
-/// Evaluate a polynomial (given as a coefficient slice) at a point 
+/// Evaluate a polynomial (given as a coefficient slice) at a point
 /// Equivalent to `DensePolynomial::eval_as_univariate` but operates on `&[F]` directly,
 /// avoiding the need to wrap data in a `DensePolynomial`.
 fn eval_as_univariate(coeffs: &[Fr], r: &Fr) -> Fr {
@@ -749,11 +749,13 @@ impl HyperKZGGpu<Bn254> {
         _eval: &Fr,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<HyperKZGProof<Bn254>> {
-
         // debug
-        println!("PROVE INPUT TRANSCRIPT: {:?}", transcript.challenge_scalar::<Fr>());
-        println!("PROVE: OPENING POINT: {:?}",point);
-        println!("PROVE: EVAL: {:?}",_eval);
+        println!(
+            "PROVE INPUT TRANSCRIPT: {:?}",
+            transcript.challenge_scalar::<Fr>()
+        );
+        println!("PROVE: OPENING POINT: {:?}", point);
+        println!("PROVE: EVAL: {:?}", _eval);
 
         let ell = point.len();
         let n = poly.len();
@@ -813,7 +815,7 @@ impl HyperKZGGpu<Bn254> {
                         transcript.append_points(&coms_aff);
                         let r: Fr = transcript.challenge_scalar();
                         let u = vec![r, -r, r * r];
-                        println!("GPU U POINTS: {:?}",u);
+                        println!("GPU U POINTS: {:?}", u);
 
                         eprintln!(
                             "[open_gpu]   callback transcript: {:?}",
@@ -904,8 +906,7 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         max_num_vars: usize,
     ) -> (Self::ProverSetup, Self::VerifierSetup) {
         println!("RUNNING GPU TEST SETUP SRS");
-        let gpu_srs = gpu_setup(rng, 1 << max_num_vars)
-            .expect("GPU setup failed");
+        let gpu_srs = gpu_setup(rng, 1 << max_num_vars).expect("GPU setup failed");
         gpu_srs.trim(1 << max_num_vars)
     }
 
@@ -1001,7 +1002,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(42);
 
@@ -1032,7 +1035,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(43);
 
@@ -1063,7 +1068,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(44);
 
@@ -1106,7 +1113,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(45);
 
@@ -1205,7 +1214,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
         use crate::arkyper::interface::CommitmentScheme;
@@ -1214,29 +1225,45 @@ mod tests {
         for ell in [18] {
             let n = 1 << ell;
 
-            let polys_raw : Vec<Vec<Fr>> = (0..n_poly)
+            let polys_raw: Vec<Vec<Fr>> = (0..n_poly)
                 .map(|_| (0..n).map(|_| Fr::rand(&mut rng)).collect())
                 .collect();
-            let polys: Vec<DensePolynomial<Fr>> = polys_raw.iter().map(|coeffs| DensePolynomial::from(coeffs.clone())).collect();
+            let polys: Vec<DensePolynomial<Fr>> = polys_raw
+                .iter()
+                .map(|coeffs| DensePolynomial::from(coeffs.clone()))
+                .collect();
             let random_coeffs = (0..n_poly).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
-            let aggregate = DensePolynomial::linear_combination(&polys, &random_coeffs);
+            let aggregated = DensePolynomial::linear_combination(
+                &polys.iter().collect::<Vec<_>>(),
+                &random_coeffs,
+            );
             let point: Vec<Fr> = (0..ell)
                 .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
                 .collect();
-            let eval = aggregate.evaluate(&point).expect("eval failed");
+            let verif_eval = aggregated.evaluate(&point).expect("eval failed");
+            let proving_eval = Fr::ZERO;
 
             // Generate both CPU and GPU prover keys from the same SRS
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
             let (cpu_pk, vk) = HyperKZG::test_setup(&mut rng, ell);
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
-            let (gpu_pk,_) = HyperKZGGpu::test_setup(&mut rng,ell);
+            let (gpu_pk, _) = HyperKZGGpu::test_setup(&mut rng, ell);
 
             // CPU commit (using original HyperKZG)
-            let (cpu_comms, _) = polys.iter().map(|p| HyperKZG::<Bn254>::commit(&cpu_pk, &p).expect("CPU commit failed")).collect::<Vec<_>>().into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
+            let (cpu_comms, _) = polys
+                .iter()
+                .map(|p| HyperKZG::<Bn254>::commit(&cpu_pk, &p).expect("CPU commit failed"))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .unzip::<_, _, Vec<_>, Vec<_>>();
 
             // GPU commit (using HyperKZGGpu)
-            let (gpu_comms, _) = polys.iter().map(|p| HyperKZGGpu::<Bn254>::commit(&gpu_pk, &p).expect("GPU commit failed")).collect::<Vec<_>>().into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
-                HyperKZGGpu::<Bn254>::commit(&gpu_pk, &poly).expect("GPU commit failed");
+            let (gpu_comms, _) = polys
+                .iter()
+                .map(|p| HyperKZGGpu::<Bn254>::commit(&gpu_pk, &p).expect("GPU commit failed"))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .unzip::<_, _, Vec<_>, Vec<_>>();
 
             for (i, (cpu_comm, gpu_comm)) in cpu_comms.iter().zip(gpu_comms.iter()).enumerate() {
                 assert_eq!(
@@ -1245,8 +1272,12 @@ mod tests {
                 );
             }
 
-            let aggregated_comm = HyperKZG::<Bn254>::combine_commitments(&cpu_comms, &random_coeffs).expect("CPU combine_commit failed");
-            let gpu_aggregated_comm = HyperKZGGpu::<Bn254>::combine_commitments(&gpu_comms, &random_coeffs).expect("GPU combine_commit failed");
+            let aggregated_comm =
+                HyperKZG::<Bn254>::combine_commitments(&cpu_comms, &random_coeffs)
+                    .expect("CPU combine_commit failed");
+            let gpu_aggregated_comm =
+                HyperKZGGpu::<Bn254>::combine_commitments(&gpu_comms, &random_coeffs)
+                    .expect("GPU combine_commit failed");
             assert_eq!(
                 aggregated_comm.0, gpu_aggregated_comm.0,
                 "Aggregated commitments differ between CPU and GPU"
@@ -1260,19 +1291,22 @@ mod tests {
 
             // GPU prove (using HyperKZGGpu trait)
             let mut gpu_transcript = Blake3Transcript::new(b"TraitTest");
-            let gpu_proof =
-                HyperKZGGpu::<Bn254>::prove(&gpu_pk, &aggregated, &point, None, &mut gpu_transcript)
-                    .expect("GPU prove failed");
+            let gpu_proof = HyperKZGGpu::<Bn254>::prove(
+                &gpu_pk,
+                &aggregated,
+                &point,
+                None,
+                &mut gpu_transcript,
+            )
+            .expect("GPU prove failed");
 
-
-            
             // Verify both proofs
             let mut verify_transcript = Blake3Transcript::new(b"TraitTest");
             HyperKZG::<Bn254>::verify(
                 &vk,
                 &aggregated_comm,
                 &point,
-                &eval,
+                &verif_eval,
                 &cpu_proof,
                 &mut verify_transcript,
             )
@@ -1284,7 +1318,7 @@ mod tests {
                 &gpu_proof,
                 &mut verify_transcript,
                 &point,
-                &eval,
+                &verif_eval,
                 &gpu_aggregated_comm,
             )
             .expect("GPU proof verification failed");
@@ -1443,7 +1477,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(47);
         let ell = 10;
@@ -1491,7 +1527,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(48);
         let ell = 10;
@@ -1534,7 +1572,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(49);
         let n = 1 << 8;
@@ -1598,7 +1638,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(50);
 
@@ -1654,7 +1696,9 @@ mod tests {
             return;
         }
         // Serialize GPU tests — see GPU_TEST_MUTEX doc comment for rationale.
-        let _lock = crate::arkyper::GPU_TEST_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _lock = crate::arkyper::GPU_TEST_MUTEX
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(55);
 
