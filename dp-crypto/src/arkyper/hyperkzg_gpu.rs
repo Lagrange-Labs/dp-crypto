@@ -296,7 +296,7 @@ pub fn gpu_batch_commit(
             format!("{}×{}({})", len, group.len(), tag)
         })
         .collect();
-    eprintln!(
+    tracing::trace!(
         "[gpu_batch_commit] {} polys, threshold={}, buckets: [{}]",
         polys.len(),
         threshold,
@@ -314,7 +314,7 @@ pub fn gpu_batch_commit(
             .unwrap();
         let t_conv = std::time::Instant::now();
         let bases = convert_bases_from_gpu(&bases_gpu[..max_cpu_len]);
-        eprintln!(
+        tracing::trace!(
             "[gpu_batch_commit] targeted CPU base conversion: {} bases, {:.1}ms",
             max_cpu_len,
             t_conv.elapsed().as_secs_f64() * 1000.0
@@ -394,7 +394,7 @@ pub fn gpu_batch_commit(
                         let group_results = fused
                             .batch_commit_concurrent(concurrent_groups, bases_gpu)
                             .map_err(|e| anyhow::anyhow!("GPU batch_commit_concurrent error: {e}"))?;
-                        eprintln!("[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
+                        tracing::trace!("[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
                             n_gpu_groups, t_gpu.elapsed().as_secs_f64() * 1000.0);
                         Ok(group_results)
                     })
@@ -432,11 +432,8 @@ pub fn gpu_batch_commit(
                     results[idx] = r;
                 }
             }
-            eprintln!(
-                "[gpu_batch_commit] CPU fallback: {} polys, {:.1}ms",
-                cpu_poly_count,
-                t_cpu.elapsed().as_secs_f64() * 1000.0
-            );
+            tracing::trace!("[gpu_batch_commit] CPU fallback: {} polys, {:.1}ms",
+                cpu_poly_count, t_cpu.elapsed().as_secs_f64() * 1000.0);
         }
 
         // Join GPU results
@@ -452,11 +449,8 @@ pub fn gpu_batch_commit(
         Ok(())
     })?;
 
-    eprintln!(
-        "[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
-        overall_start.elapsed().as_secs_f64() * 1000.0,
-        polys.len()
-    );
+    tracing::trace!("[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
+        overall_start.elapsed().as_secs_f64() * 1000.0, polys.len());
 
     Ok(results)
 }
@@ -763,7 +757,7 @@ impl HyperKZGGpu<Bn254> {
             let mut guard = GPU_FUSED.lock().unwrap();
             let upload_start = std::time::Instant::now();
             guard.ensure_bases_uploaded_gpu(pk.bases_gpu())?;
-            eprintln!(
+            tracing::trace!(
                 "[open_gpu] ensure_bases_uploaded_gpu: {:?}",
                 upload_start.elapsed()
             );
@@ -836,7 +830,7 @@ impl HyperKZGGpu<Bn254> {
                 .map_err(|e| anyhow::anyhow!("GPU fused_open error: {e}"))?
         };
 
-        eprintln!(
+        tracing::trace!(
             "[open_gpu] fused_open returned: {:?}",
             open_gpu_start.elapsed()
         );
@@ -847,7 +841,7 @@ impl HyperKZGGpu<Bn254> {
             .iter()
             .map(|g| g.into_affine())
             .collect();
-        eprintln!("[open_gpu] TOTAL: {:?}", open_gpu_start.elapsed());
+        tracing::trace!("[open_gpu] TOTAL: {:?}", open_gpu_start.elapsed());
 
         Ok(HyperKZGProof {
             coms: result.intermediate_commitments_affine,
