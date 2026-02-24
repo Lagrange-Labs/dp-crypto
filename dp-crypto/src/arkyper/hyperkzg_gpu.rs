@@ -1360,7 +1360,6 @@ mod tests {
     /// GPU batch_commit measurement from exported data.
     /// Loads pre-generated SRS from disk and converts to GPU format.
     #[test]
-    #[ignore = "only manual testing - requires generate_srs first"]
     fn test_gpu_commit_from_exported_data() {
         use crate::arkyper::PcsCommitExport;
         use std::fs::File;
@@ -1410,14 +1409,22 @@ mod tests {
         println!("[gpu-commit] SRS loaded + converted: {:.2?}", load_time);
 
         let t_commit = Instant::now();
-        let _commits =
-            HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys).expect("GPU batch_commit failed");
+        let batch_commits = HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys)
+            .expect("GPU batch_commit failed")
+            .into_iter()
+            .map(|(c, _)| c)
+            .collect::<Vec<_>>();
         let commit_time = t_commit.elapsed();
 
         println!(
             "=== GPU commit: load {:.2?}, batch_commit {:.2?} ({} polys) ===",
             load_time, commit_time, num_polys
         );
+        let ind_commits = polys
+            .iter()
+            .map(|p| HyperKZGGpu::commit(&gpu_pk, &p).unwrap().0)
+            .collect::<Vec<_>>();
+        assert_eq!(batch_commits, ind_commits);
     }
 
     /// GPU prove measurement from exported data.
