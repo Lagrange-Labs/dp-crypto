@@ -1261,6 +1261,12 @@ mod tests {
                 .map(|(c, _)| c)
                 .collect::<Vec<_>>();
 
+            let ind_gpu_comms = polys
+                .iter()
+                .map(|p| HyperKZGGpu::commit(&gpu_pk, p).unwrap().0)
+                .collect::<Vec<_>>();
+            assert_eq!(gpu_comms, ind_gpu_comms);
+
             for (i, (cpu_comm, gpu_comm)) in cpu_comms.iter().zip(gpu_comms.iter()).enumerate() {
                 assert_eq!(
                     cpu_comm.0, gpu_comm.0,
