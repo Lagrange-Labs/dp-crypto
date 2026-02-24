@@ -406,10 +406,10 @@ impl<P: Pairing> HyperKZG<P> {
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<()> {
         // debug
-        println!(
-            "INPUT VERIFICATION SCALAR: {:?}",
-            transcript.challenge_scalar::<P::ScalarField>()
-        );
+        //println!(
+        //    "INPUT VERIFICATION SCALAR: {:?}",
+        //    transcript.challenge_scalar::<P::ScalarField>()
+        //);
         println!("INPUT COMM {:?}", comm);
         println!("INPUT OPENING POINT: {:?}", point);
         println!("INPUT OPENING: {:?}", px);

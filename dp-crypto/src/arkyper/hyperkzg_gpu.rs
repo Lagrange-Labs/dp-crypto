@@ -749,11 +749,10 @@ impl HyperKZGGpu<Bn254> {
         _eval: &Fr,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<HyperKZGProof<Bn254>> {
-        // debug
-        println!(
-            "PROVE INPUT TRANSCRIPT: {:?}",
-            transcript.challenge_scalar::<Fr>()
-        );
+        //println!(
+        //    "PROVE INPUT TRANSCRIPT: {:?}",
+        //    transcript.challenge_scalar::<Fr>()
+        //);
         println!("PROVE: OPENING POINT: {:?}", point);
         println!("PROVE: EVAL: {:?}", _eval);
 
@@ -1250,20 +1249,17 @@ mod tests {
             let (gpu_pk, _) = HyperKZGGpu::test_setup(&mut rng, ell);
 
             // CPU commit (using original HyperKZG)
-            let (cpu_comms, _) = polys
-                .iter()
-                .map(|p| HyperKZG::<Bn254>::commit(&cpu_pk, &p).expect("CPU commit failed"))
-                .collect::<Vec<_>>()
+            let cpu_comms = HyperKZG::batch_commit(&cpu_pk, &polys)
+                .expect("CPU COMMIT FAILED")
                 .into_iter()
-                .unzip::<_, _, Vec<_>, Vec<_>>();
-
+                .map(|(c, _)| c)
+                .collect::<Vec<_>>();
             // GPU commit (using HyperKZGGpu)
-            let (gpu_comms, _) = polys
-                .iter()
-                .map(|p| HyperKZGGpu::<Bn254>::commit(&gpu_pk, &p).expect("GPU commit failed"))
-                .collect::<Vec<_>>()
+            let gpu_comms = HyperKZGGpu::batch_commit(&gpu_pk, &polys)
+                .expect("GPU COMMIT FAILED")
                 .into_iter()
-                .unzip::<_, _, Vec<_>, Vec<_>>();
+                .map(|(c, _)| c)
+                .collect::<Vec<_>>();
 
             for (i, (cpu_comm, gpu_comm)) in cpu_comms.iter().zip(gpu_comms.iter()).enumerate() {
                 assert_eq!(
