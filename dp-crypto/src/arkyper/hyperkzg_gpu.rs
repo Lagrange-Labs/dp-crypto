@@ -1210,46 +1210,58 @@ mod tests {
         let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
         use crate::arkyper::interface::CommitmentScheme;
 
-        for ell in [8, 10] {
+        let n_poly = 4;
+        for ell in [18] {
             let n = 1 << ell;
 
-            let poly_raw: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
-            let poly = DensePolynomial::from(poly_raw);
+            let polys_raw : Vec<Vec<Fr>> = (0..n_poly)
+                .map(|_| (0..n).map(|_| Fr::rand(&mut rng)).collect())
+                .collect();
+            let polys: Vec<DensePolynomial<Fr>> = polys_raw.iter().map(|coeffs| DensePolynomial::from(coeffs.clone())).collect();
+            let random_coeffs = (0..n_poly).map(|_| Fr::rand(&mut rng)).collect::<Vec<_>>();
+            let aggregate = DensePolynomial::linear_combination(&polys, &random_coeffs);
             let point: Vec<Fr> = (0..ell)
                 .map(|_| challenge::random_challenge::<Fr, _>(&mut rng))
                 .collect();
-            let eval = poly.evaluate(&point).expect("eval failed");
+            let eval = aggregate.evaluate(&point).expect("eval failed");
 
             // Generate both CPU and GPU prover keys from the same SRS
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
             let (cpu_pk, vk) = HyperKZG::test_setup(&mut rng, ell);
             let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
             let (gpu_pk,_) = HyperKZGGpu::test_setup(&mut rng,ell);
-            //let gpu_pk = HyperKZGGpuProverKey::from_cpu(&cpu_pk);
 
             // CPU commit (using original HyperKZG)
-            let (cpu_comm, _) =
-                HyperKZG::<Bn254>::commit(&cpu_pk, &poly).expect("CPU commit failed");
+            let (cpu_comms, _) = polys.iter().map(|p| HyperKZG::<Bn254>::commit(&cpu_pk, &p).expect("CPU commit failed")).collect::<Vec<_>>().into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
 
             // GPU commit (using HyperKZGGpu)
-            let (gpu_comm, _) =
+            let (gpu_comms, _) = polys.iter().map(|p| HyperKZGGpu::<Bn254>::commit(&gpu_pk, &p).expect("GPU commit failed")).collect::<Vec<_>>().into_iter().unzip::<_, _, Vec<_>, Vec<_>>();
                 HyperKZGGpu::<Bn254>::commit(&gpu_pk, &poly).expect("GPU commit failed");
 
+            for (i, (cpu_comm, gpu_comm)) in cpu_comms.iter().zip(gpu_comms.iter()).enumerate() {
+                assert_eq!(
+                    cpu_comm.0, gpu_comm.0,
+                    "Commitments {i} differ between CPU and GPU"
+                );
+            }
+
+            let aggregated_comm = HyperKZG::<Bn254>::combine_commitments(&cpu_comms, &random_coeffs).expect("CPU combine_commit failed");
+            let gpu_aggregated_comm = HyperKZGGpu::<Bn254>::combine_commitments(&gpu_comms, &random_coeffs).expect("GPU combine_commit failed");
             assert_eq!(
-                cpu_comm.0, gpu_comm.0,
-                "Commitments differ between CPU and GPU"
+                aggregated_comm.0, gpu_aggregated_comm.0,
+                "Aggregated commitments differ between CPU and GPU"
             );
 
             // CPU prove (using original HyperKZG)
             let mut cpu_transcript = Blake3Transcript::new(b"TraitTest");
             let cpu_proof =
-                HyperKZG::<Bn254>::prove(&cpu_pk, &poly, &point, None, &mut cpu_transcript)
+                HyperKZG::<Bn254>::prove(&cpu_pk, &aggregated, &point, None, &mut cpu_transcript)
                     .expect("CPU prove failed");
 
             // GPU prove (using HyperKZGGpu trait)
             let mut gpu_transcript = Blake3Transcript::new(b"TraitTest");
             let gpu_proof =
-                HyperKZGGpu::<Bn254>::prove(&gpu_pk, &poly, &point, None, &mut gpu_transcript)
+                HyperKZGGpu::<Bn254>::prove(&gpu_pk, &aggregated, &point, None, &mut gpu_transcript)
                     .expect("GPU prove failed");
 
 
@@ -1258,7 +1270,7 @@ mod tests {
             let mut verify_transcript = Blake3Transcript::new(b"TraitTest");
             HyperKZG::<Bn254>::verify(
                 &vk,
-                &cpu_comm,
+                &aggregated_comm,
                 &point,
                 &eval,
                 &cpu_proof,
@@ -1273,7 +1285,7 @@ mod tests {
                 &mut verify_transcript,
                 &point,
                 &eval,
-                &gpu_comm,
+                &gpu_aggregated_comm,
             )
             .expect("GPU proof verification failed");
 
