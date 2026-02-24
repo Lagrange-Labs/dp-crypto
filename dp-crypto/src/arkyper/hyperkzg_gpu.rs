@@ -432,8 +432,11 @@ pub fn gpu_batch_commit(
                     results[idx] = r;
                 }
             }
-            eprintln!("[gpu_batch_commit] CPU fallback: {} polys, {:.1}ms",
-                cpu_poly_count, t_cpu.elapsed().as_secs_f64() * 1000.0);
+            eprintln!(
+                "[gpu_batch_commit] CPU fallback: {} polys, {:.1}ms",
+                cpu_poly_count,
+                t_cpu.elapsed().as_secs_f64() * 1000.0
+            );
         }
 
         // Join GPU results
@@ -449,8 +452,11 @@ pub fn gpu_batch_commit(
         Ok(())
     })?;
 
-    eprintln!("[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
-        overall_start.elapsed().as_secs_f64() * 1000.0, polys.len());
+    eprintln!(
+        "[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
+        overall_start.elapsed().as_secs_f64() * 1000.0,
+        polys.len()
+    );
 
     Ok(results)
 }
@@ -1364,12 +1370,15 @@ mod tests {
             polys.iter().map(|p| p.num_vars()).collect::<Vec<_>>()
         );
 
-        let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
-        println!("[gpu-commit] Loading SRS from {}...", srs_path);
+        //    let srs_path = format!("/tmp/pcs_srs_{}.bin", max_len);
+        //    println!("[gpu-commit] Loading SRS from {}...", srs_path);
         let t_load = Instant::now();
-        let gpu_pk = load_gpu_pk_from_file(&srs_path);
+        //    let gpu_pk = load_gpu_pk_from_file(&srs_path);
+        //    println!("[gpu-commit] SRS loaded + converted: {:.2?}", load_time);
+        let max_num_vars: usize = polys.iter().map(|p| p.num_vars()).max().unwrap();
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(46);
+        let (gpu_pk, _) = HyperKZGGpu::test_setup(&mut rng, max_num_vars);
         let load_time = t_load.elapsed();
-        println!("[gpu-commit] SRS loaded + converted: {:.2?}", load_time);
 
         let t_commit = Instant::now();
         let batch_commits = HyperKZGGpu::<Bn254>::batch_commit(&gpu_pk, &polys)
