@@ -394,11 +394,8 @@ pub fn gpu_batch_commit(
                         let group_results = fused
                             .batch_commit_concurrent(concurrent_groups, bases_gpu)
                             .map_err(|e| anyhow::anyhow!("GPU batch_commit_concurrent error: {e}"))?;
-                        eprintln!(
-                            "[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
-                            n_gpu_groups,
-                            t_gpu.elapsed().as_secs_f64() * 1000.0
-                        );
+                        eprintln!("[gpu_batch_commit] GPU concurrent: {} groups, {:.1}ms",
+                            n_gpu_groups, t_gpu.elapsed().as_secs_f64() * 1000.0);
                         Ok(group_results)
                     })
                     .expect("failed to spawn GPU thread"),
@@ -435,14 +432,8 @@ pub fn gpu_batch_commit(
                     results[idx] = r;
                 }
             }
-            if cpu_poly_count > 0 {
-                eprintln!(
-                    "[gpu_batch_commit] CPU fallback: {} polys (threshold={}), {:.1}ms",
-                    cpu_poly_count,
-                    threshold,
-                    t_cpu.elapsed().as_secs_f64() * 1000.0
-                );
-            }
+            eprintln!("[gpu_batch_commit] CPU fallback: {} polys, {:.1}ms",
+                cpu_poly_count, t_cpu.elapsed().as_secs_f64() * 1000.0);
         }
 
         // Join GPU results
@@ -458,11 +449,9 @@ pub fn gpu_batch_commit(
         Ok(())
     })?;
 
-    eprintln!(
-        "[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
-        overall_start.elapsed().as_secs_f64() * 1000.0,
-        polys.len()
-    );
+    eprintln!("[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
+        overall_start.elapsed().as_secs_f64() * 1000.0, polys.len());
+
     Ok(results)
 }
 
@@ -749,12 +738,7 @@ impl HyperKZGGpu<Bn254> {
         _eval: &Fr,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<HyperKZGProof<Bn254>> {
-        //println!(
-        //    "PROVE INPUT TRANSCRIPT: {:?}",
-        //    transcript.challenge_scalar::<Fr>()
-        //);
-        println!("PROVE: OPENING POINT: {:?}", point);
-        println!("PROVE: EVAL: {:?}", _eval);
+        // (debug prints removed)
 
         let ell = point.len();
         let n = poly.len();
@@ -793,7 +777,6 @@ impl HyperKZGGpu<Bn254> {
                     cpu_bases,
                     |intermediates, commitments| {
                         // === CPU work inside the GPU session ===
-                        let callback_detail_start = std::time::Instant::now();
 
                         // Build slice references to all polynomials (original + intermediates)
                         // Avoids cloning into DensePolynomial wrappers.
@@ -814,13 +797,6 @@ impl HyperKZGGpu<Bn254> {
                         transcript.append_points(&coms_aff);
                         let r: Fr = transcript.challenge_scalar();
                         let u = vec![r, -r, r * r];
-                        println!("GPU U POINTS: {:?}", u);
-
-                        eprintln!(
-                            "[open_gpu]   callback transcript: {:?}",
-                            callback_detail_start.elapsed()
-                        );
-                        let eval_start = std::time::Instant::now();
 
                         // Evaluate f_i(u_j) on CPU using Horner's method on raw slices,
                         // parallelized with rayon for large polynomial counts.
@@ -837,13 +813,6 @@ impl HyperKZGGpu<Bn254> {
                                 );
                             });
                         }
-
-                        eprintln!(
-                            "[open_gpu]   callback evals ({}x{}): {:?}",
-                            t,
-                            k,
-                            eval_start.elapsed()
-                        );
 
                         // Transcript: append evals and get q_powers
                         let scalars: Vec<&Fr> = v.iter().flatten().collect();
@@ -867,16 +836,11 @@ impl HyperKZGGpu<Bn254> {
         );
 
         // Final transcript work (witness commitments)
-        let final_transcript_start = std::time::Instant::now();
         let w_aff: Vec<G1Affine> = result
             .witness_commitments
             .iter()
             .map(|g| g.into_affine())
             .collect();
-        eprintln!(
-            "[open_gpu] final transcript: {:?}",
-            final_transcript_start.elapsed()
-        );
         eprintln!("[open_gpu] TOTAL: {:?}", open_gpu_start.elapsed());
 
         Ok(HyperKZGProof {
@@ -904,7 +868,6 @@ impl CommitmentScheme for HyperKZGGpu<Bn254> {
         rng: &mut R,
         max_num_vars: usize,
     ) -> (Self::ProverSetup, Self::VerifierSetup) {
-        println!("RUNNING GPU TEST SETUP SRS");
         let gpu_srs = gpu_setup(rng, 1 << max_num_vars).expect("GPU setup failed");
         gpu_srs.trim(1 << max_num_vars)
     }
