@@ -401,6 +401,11 @@ impl<P: Pairing> HyperKZG<P> {
         pi: &HyperKZGProof<P>,
         transcript: &mut ProofTranscript,
     ) -> anyhow::Result<()> {
+        // debug
+        //println!(
+        //    "INPUT VERIFICATION SCALAR: {:?}",
+        //    transcript.challenge_scalar::<P::ScalarField>()
+        //);
         let y = px;
 
         let ell = point.len();
