@@ -6,12 +6,12 @@ use ark_poly::DenseMultilinearExtension;
 use ark_poly_commit::multilinear_pc::MultilinearPC;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
+#[cfg(feature = "cuda")]
+use dp_crypto::arkyper::HyperKZGGpu;
 use dp_crypto::{
     arkyper::{CommitmentScheme, HyperKZG},
     poly::{dense::DensePolynomial as ADensePolynomial, slice::SmartSlice},
 };
-#[cfg(feature = "cuda")]
-use dp_crypto::arkyper::HyperKZGGpu;
 #[allow(unused_imports)]
 use jolt_core::poly::{
     commitment::{
@@ -68,7 +68,10 @@ mod commit {
     fn arkyper_gpu_commit(b: Bencher, n: usize) {
         b.with_inputs(|| {
             let evals = arkworks_static_evals(2u32.pow(n as u32) as usize);
-            (evals, HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n))
+            (
+                evals,
+                HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n),
+            )
         })
         .bench_local_values(|(s, (pp, _))| {
             let poly = ADensePolynomial::new(s);
@@ -83,7 +86,10 @@ mod commit {
             let polys = (0..NUM_BATCHED_POLYS)
                 .map(|_| ADensePolynomial::new(arkworks_static_evals(2u32.pow(n as u32) as usize)))
                 .collect::<Vec<_>>();
-            (polys, HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n))
+            (
+                polys,
+                HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), n),
+            )
         })
         .bench_local_values(|(polys, (pp, _))| {
             HyperKZGGpu::<Bn254>::batch_commit(&pp, &polys).unwrap()
@@ -196,8 +202,8 @@ mod commit {
 mod open {
     use ark_bn254::Fr;
     use ark_ff::AdditiveGroup;
-    use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
     use dp_crypto::arkyper::transcript::Transcript;
+    use dp_crypto::arkyper::transcript::blake3::Blake3Transcript;
     #[allow(unused_imports)]
     use jolt_core::field::JoltField;
     #[allow(unused_imports)]

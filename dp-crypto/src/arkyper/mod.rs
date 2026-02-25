@@ -31,6 +31,7 @@ pub mod gpu_msm;
 pub mod hyperkzg_gpu;
 #[cfg(feature = "cuda")]
 pub use hyperkzg_gpu::{HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGGpuSRS, gpu_setup};
+pub mod mock;
 
 /// Mutex to serialize GPU tests. GPU operations are not thread-safe across
 /// multiple test threads because they share global GPU state (lazy statics

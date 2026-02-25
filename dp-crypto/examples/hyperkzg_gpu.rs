@@ -6,12 +6,12 @@
 //! ```
 
 use ark_bn254::{Bn254, Fr};
-use ark_std::rand::SeedableRng;
 use ark_std::UniformRand;
+use ark_std::rand::SeedableRng;
 use dp_crypto::{
     arkyper::{
-        transcript::blake3::Blake3Transcript, CommitmentScheme, HyperKZG, HyperKZGGpu,
-        HyperKZGGpuProverKey, HyperKZGSRS,
+        CommitmentScheme, HyperKZG, HyperKZGGpu, HyperKZGGpuProverKey, HyperKZGSRS,
+        transcript::blake3::Blake3Transcript,
     },
     poly::dense::DensePolynomial,
 };
@@ -66,7 +66,10 @@ fn main() -> anyhow::Result<()> {
     println!("  GPU commit time: {:?}", gpu_commit_time);
 
     // Verify they match
-    assert_eq!(cpu_commitment.0, gpu_commitment.0, "Commitments should match!");
+    assert_eq!(
+        cpu_commitment.0, gpu_commitment.0,
+        "Commitments should match!"
+    );
     println!("  Commitments match!");
     println!(
         "  Speedup: {:.2}x\n",
@@ -99,7 +102,11 @@ fn main() -> anyhow::Result<()> {
     println!("  GPU batch commit time: {:?}", gpu_batch_time);
 
     // Verify they match
-    for (i, ((cpu_c, _), (gpu_c, _))) in cpu_commitments.iter().zip(gpu_commitments.iter()).enumerate() {
+    for (i, ((cpu_c, _), (gpu_c, _))) in cpu_commitments
+        .iter()
+        .zip(gpu_commitments.iter())
+        .enumerate()
+    {
         assert_eq!(cpu_c.0, gpu_c.0, "Commitment {} should match!", i);
     }
     println!("  All {} commitments match!", num_polys);

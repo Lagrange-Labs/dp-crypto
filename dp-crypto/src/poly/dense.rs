@@ -104,7 +104,10 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         }
     }
 
-    pub fn shallow_clone<'b>(&'a self) -> DensePolynomial<'b, F> where 'a: 'b {
+    pub fn shallow_clone<'b>(&'a self) -> DensePolynomial<'b, F>
+    where
+        'a: 'b,
+    {
         Self {
             num_vars: self.num_vars,
             len: self.len,

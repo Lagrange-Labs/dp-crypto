@@ -9,18 +9,15 @@
 
 use ark_bn254::{Bn254, Fr};
 use ark_ff::AdditiveGroup;
+use ark_std::rand::Rng;
 use ark_std::rand::thread_rng;
 use divan::Bencher;
-use dp_crypto::{
-    arkyper::{
-        transcript::blake3::Blake3Transcript,
-        CommitmentScheme, HyperKZG,
-    },
-    poly::dense::DensePolynomial,
-};
 #[cfg(feature = "cuda")]
 use dp_crypto::arkyper::HyperKZGGpu;
-use ark_std::rand::Rng;
+use dp_crypto::{
+    arkyper::{CommitmentScheme, HyperKZG, transcript::blake3::Blake3Transcript},
+    poly::dense::DensePolynomial,
+};
 
 fn main() {
     divan::main();
@@ -58,9 +55,7 @@ mod batch_commit {
             let (pp, _) = HyperKZG::<Bn254>::test_setup(&mut thread_rng(), LOG_N);
             (pp, polys)
         })
-        .bench_local_values(|(pp, polys)| {
-            HyperKZG::<Bn254>::batch_commit(&pp, &polys).unwrap()
-        })
+        .bench_local_values(|(pp, polys)| HyperKZG::<Bn254>::batch_commit(&pp, &polys).unwrap())
     }
 
     #[divan::bench]
@@ -71,9 +66,7 @@ mod batch_commit {
             let (pp, _) = HyperKZGGpu::<Bn254>::test_setup(&mut thread_rng(), LOG_N);
             (pp, polys)
         })
-        .bench_local_values(|(pp, polys)| {
-            HyperKZGGpu::<Bn254>::batch_commit(&pp, &polys).unwrap()
-        })
+        .bench_local_values(|(pp, polys)| HyperKZGGpu::<Bn254>::batch_commit(&pp, &polys).unwrap())
     }
 }
 
@@ -86,18 +79,19 @@ mod batch_open {
     use super::*;
 
     /// Build a single combined polynomial with small (≤53-bit) coefficients.
-    fn make_open_input<CS: CommitmentScheme<Field = Fr>>() -> (CS::ProverSetup, DensePolynomial<'static, Fr>, Vec<Fr>, Blake3Transcript) {
+    fn make_open_input<CS: CommitmentScheme<Field = Fr>>() -> (
+        CS::ProverSetup,
+        DensePolynomial<'static, Fr>,
+        Vec<Fr>,
+        Blake3Transcript,
+    ) {
         let polys = make_polys();
         let (pp, _) = CS::test_setup(&mut thread_rng(), LOG_N);
         let point: Vec<Fr> = (0..LOG_N).map(|i| Fr::from(i as u64)).collect();
         // Use small challenges so the linear combination stays ≤53-bit.
-        let challenges: Vec<Fr> = (1..=polys.len())
-            .map(|i| Fr::from(i as u64))
-            .collect();
-        let poly = DensePolynomial::linear_combination(
-            &polys.iter().collect::<Vec<_>>(),
-            &challenges,
-        );
+        let challenges: Vec<Fr> = (1..=polys.len()).map(|i| Fr::from(i as u64)).collect();
+        let poly =
+            DensePolynomial::linear_combination(&polys.iter().collect::<Vec<_>>(), &challenges);
         let transcript = Blake3Transcript::new(b"bench_open");
         (pp, poly, point, transcript)
     }
@@ -105,17 +99,17 @@ mod batch_open {
     #[divan::bench]
     fn cpu(b: Bencher) {
         b.with_inputs(make_open_input::<HyperKZG<Bn254>>)
-        .bench_local_values(|(pp, poly, point, mut transcript)| {
-            HyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut transcript).unwrap()
-        })
+            .bench_local_values(|(pp, poly, point, mut transcript)| {
+                HyperKZG::<Bn254>::open(&pp, &poly, &point, &Fr::ZERO, &mut transcript).unwrap()
+            })
     }
 
     #[divan::bench]
     #[cfg(feature = "cuda")]
     fn gpu(b: Bencher) {
         b.with_inputs(make_open_input::<HyperKZGGpu<Bn254>>)
-        .bench_local_values(|(pp, poly, point, mut transcript)| {
-            HyperKZGGpu::<Bn254>::prove(&pp, &poly, &point, None, &mut transcript).unwrap()
-        })
+            .bench_local_values(|(pp, poly, point, mut transcript)| {
+                HyperKZGGpu::<Bn254>::prove(&pp, &poly, &point, None, &mut transcript).unwrap()
+            })
     }
 }
