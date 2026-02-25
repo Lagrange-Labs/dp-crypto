@@ -432,8 +432,11 @@ pub fn gpu_batch_commit(
                     results[idx] = r;
                 }
             }
-            tracing::trace!("[gpu_batch_commit] CPU fallback: {} polys, {:.1}ms",
-                cpu_poly_count, t_cpu.elapsed().as_secs_f64() * 1000.0);
+            tracing::trace!(
+                "[gpu_batch_commit] CPU fallback: {} polys, {:.1}ms",
+                cpu_poly_count,
+                t_cpu.elapsed().as_secs_f64() * 1000.0
+            );
         }
 
         // Join GPU results
@@ -449,8 +452,11 @@ pub fn gpu_batch_commit(
         Ok(())
     })?;
 
-    tracing::trace!("[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
-        overall_start.elapsed().as_secs_f64() * 1000.0, polys.len());
+    tracing::trace!(
+        "[gpu_batch_commit] TOTAL: {:.1}ms ({} polys)",
+        overall_start.elapsed().as_secs_f64() * 1000.0,
+        polys.len()
+    );
 
     Ok(results)
 }

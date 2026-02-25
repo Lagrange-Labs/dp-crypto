@@ -10,8 +10,8 @@
 //! ```
 
 use ark_bn254::Fr;
-use ark_std::rand::SeedableRng;
 use ark_std::UniformRand;
+use ark_std::rand::SeedableRng;
 use divan::Bencher;
 
 fn main() {
@@ -34,9 +34,9 @@ fn generate_small_scalars(n: usize, max_bits: u32, rng: &mut impl ark_std::rand:
 #[divan::bench_group(sample_count = 5, sample_size = 1)]
 mod gpu_msm_bitlength {
     use super::*;
-    use dp_crypto::arkyper::gpu_msm::{convert_bases_to_gpu, convert_scalars_to_bigint, GPU_MSM};
-    use dp_crypto::arkyper::{HyperKZGSRS, HyperKZGProverKey};
     use ark_bn254::Bn254;
+    use dp_crypto::arkyper::gpu_msm::{GPU_MSM, convert_bases_to_gpu, convert_scalars_to_bigint};
+    use dp_crypto::arkyper::{HyperKZGProverKey, HyperKZGSRS};
     use std::sync::Arc;
 
     /// MSM with 53-bit scalars (typical for polynomial evaluations from fix_var).
@@ -86,9 +86,9 @@ mod gpu_msm_bitlength {
 #[divan::bench_group(sample_count = 5, sample_size = 1)]
 mod cpu_msm_bitlength {
     use super::*;
-    use ark_ec::VariableBaseMSM;
     use ark_bn254::{Bn254, G1Projective};
-    use dp_crypto::arkyper::{HyperKZGSRS, HyperKZGProverKey};
+    use ark_ec::VariableBaseMSM;
+    use dp_crypto::arkyper::{HyperKZGProverKey, HyperKZGSRS};
 
     #[divan::bench(args = SIZES)]
     fn msm_53bit_scalars(b: Bencher, log_n: usize) {
@@ -100,9 +100,7 @@ mod cpu_msm_bitlength {
         let bases = &pk.g1_powers()[..n];
         let scalars = generate_small_scalars(n, 53, &mut rng);
 
-        b.bench_local(|| {
-            G1Projective::msm(bases, &scalars).expect("CPU MSM failed")
-        })
+        b.bench_local(|| G1Projective::msm(bases, &scalars).expect("CPU MSM failed"))
     }
 
     #[divan::bench(args = SIZES)]
@@ -115,8 +113,6 @@ mod cpu_msm_bitlength {
         let bases = &pk.g1_powers()[..n];
         let scalars: Vec<Fr> = (0..n).map(|_| Fr::rand(&mut rng)).collect();
 
-        b.bench_local(|| {
-            G1Projective::msm(bases, &scalars).expect("CPU MSM failed")
-        })
+        b.bench_local(|| G1Projective::msm(bases, &scalars).expect("CPU MSM failed"))
     }
 }

@@ -4,9 +4,7 @@ use ark_bn254::{Fq, Fr, G1Affine, G1Projective};
 use ark_ec::AffineRepr;
 use ark_ff::PrimeField;
 use ec_gpu::arkworks_bn254::G1Affine as GpuG1Affine;
-use ec_gpu_gen::{
-    program, rust_gpu_tools::Device, threadpool::Worker, G1AffineM, MultiexpKernel,
-};
+use ec_gpu_gen::{G1AffineM, MultiexpKernel, program, rust_gpu_tools::Device, threadpool::Worker};
 use rayon::prelude::*;
 
 pub static GPU_MSM: std::sync::LazyLock<Mutex<GpuMsm>> =
@@ -88,7 +86,6 @@ impl GpuMsm {
         }
         Ok(results)
     }
-
 }
 
 fn fq_to_montgomery_bytes(x: &Fq) -> [u8; 32] {
