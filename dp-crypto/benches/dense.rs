@@ -8,13 +8,13 @@ fn main() {
     divan::main();
 }
 
-const LENS: [usize; 7] = [12, 14, 16, 18, 20, 22, 24];
+const LENS: [usize; 6] = [12, 14, 16, 18, 20, 22];
 
 fn arkworks_static_evals(n: usize) -> Vec<Fr> {
     (0..n).map(|i| Fr::from(i as u64)).collect()
 }
 
-#[divan::bench_group(sample_count = 20, sample_size = 1)]
+#[divan::bench_group(sample_count = 20, sample_size = 1,ignore = true)]
 mod dense {
     use super::*;
 
@@ -97,7 +97,7 @@ mod dense {
     }
 }
 
-#[divan::bench_group(sample_count = 20, sample_size = 1)]
+#[divan::bench_group(sample_count = 20, sample_size = 1,ignore = true)]
 mod fixing {
     use std::iter::repeat;
 
@@ -207,6 +207,64 @@ mod fixing {
         })
         .bench_local_refs(|(poly, point)| {
             poly.fix_high_variables_in_place_parallel(point);
+        })
+    }
+}
+
+#[divan::bench_group(sample_count = 20, sample_size = 1)]
+mod memory {
+    use ark_bn254::Fr;
+    use divan::Bencher;
+    use dp_crypto::poly::{dense::DensePolynomial, slice::SmartSlice};
+
+    use crate::{LENS, arkworks_static_evals};
+
+
+    #[divan::bench(args = LENS)]
+    fn arkyper_fix_low_inplace(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let mut poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
+                arkworks_static_evals(2u32.pow(n as u32) as usize),
+            ));
+            poly.zero_pad_num_vars(n + 2).unwrap();
+            let r_len = n / 2;
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            (poly, point)
+        })
+        .bench_local_refs(|(poly, point)| {
+            poly.bound_poly_var_bot_01_inplace(&point[0]);
+        })
+    }
+    
+    #[divan::bench(args = LENS)]
+    fn arkyper_fix_low_parallel(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let mut poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
+                arkworks_static_evals(2u32.pow(n as u32) as usize),
+            ));
+            poly.zero_pad_num_vars(n + 2).unwrap();
+            let r_len = n / 2;
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            (poly, point)
+        })
+        .bench_local_refs(|(poly, point)| {
+            poly.bound_poly_var_bot_01_optimized(&point[0]);
+        })
+    }
+
+    #[divan::bench(args = LENS)]
+    fn arkyper_fix_low_gap(b: Bencher, n: usize) {
+        b.with_inputs(|| {
+            let mut poly = DensePolynomial::new_from_smart_slice(SmartSlice::Owned(
+                arkworks_static_evals(2u32.pow(n as u32) as usize),
+            ));
+            poly.zero_pad_num_vars(n + 2).unwrap();
+            let r_len = n / 2;
+            let point = (0..r_len).map(|i| Fr::from(i as u64)).collect::<Vec<_>>();
+            (poly, point)
+        })
+        .bench_local_refs(|(poly, point)| {
+            poly.bound_poly_var_bot_01_gap(&point[0]);
         })
     }
 }
