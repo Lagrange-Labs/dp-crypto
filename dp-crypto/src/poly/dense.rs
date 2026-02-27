@@ -510,7 +510,46 @@ impl<'a, F: Field> DensePolynomial<'a, F> {
         }
     }
 
-    fn bound_poly_var_bot_01_optimized(&self, r: &F) -> Vec<F> {
+    pub fn bound_poly_var_bot_01_inplace(&mut self, r: &F) {
+        let n = self.unpadded_len() / 2;
+
+        for i in 0..n {
+            let a0 = self.z[2 * i];
+            let a1 = self.z[2 * i + 1];
+            let m = a1 - a0;
+
+            self.z[i] = if m.is_zero() {
+                a0
+            } else if m.is_one() {
+                a0 + *r
+            } else {
+                a0 + *r * m
+            };
+        }
+
+        self.z.truncate_mut(n);
+    }
+
+    pub fn bound_poly_var_bot_01_gap(&mut self, r: &F) {
+        let n = self.unpadded_len() / 2;
+
+        self.z.par_chunks_exact_mut(2)
+            .with_min_len(512)
+            .for_each(|chunk| {
+                let a0 = chunk[0];
+                let a1 = chunk[1];
+                chunk[0] = a0 + *r * (a1 - a0);
+            });
+
+        // Phase 2: sequential compaction
+        for i in 0..n {
+            self.z[i] = self.z[2 * i];
+        }
+
+        self.z.truncate_mut(n);
+    }
+
+    pub fn bound_poly_var_bot_01_optimized(&self, r: &F) -> Vec<F> {
         let n = self.unpadded_len() / 2;
         let mut bound_z: Vec<F> = unsafe_allocate_zero_vec(n);
         unsafe { bound_z.set_len(0) };
