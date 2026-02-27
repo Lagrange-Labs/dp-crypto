@@ -1378,4 +1378,24 @@ mod tests {
 
         assert_eq!(padded_poly_eval, expected_eval);
     }
+
+    #[test]
+    fn test_dense_fixing() {
+        let num_vars = 4;
+        let mut rng = ChaCha20Rng::seed_from_u64(42);
+        let poly = DensePolynomial::<Fr>::random(num_vars, &mut rng);
+        let point = Fr::rand(&mut rng);
+        let mut poly_gap = poly.clone();
+        poly_gap.bound_poly_var_bot_01_gap(&point);
+        let gap_z = poly_gap.z;
+        let poly_parallel = poly.clone();
+        let parallel_z = poly_parallel.bound_poly_var_bot_01_optimized(&point);
+        let mut poly_inplace = poly.clone();
+        poly_inplace.bound_poly_var_bot_01_inplace(&point);
+        let inplace_z = poly_inplace.z;
+
+        assert_eq!(inplace_z.to_vec(), parallel_z);
+        assert_eq!(gap_z, inplace_z); 
+
+    }
 }
